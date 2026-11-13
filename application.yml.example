@@ -1,0 +1,10 @@
+# Copy to ./application-local.yml (gitignored) to configure secrets locally
+# instead of using environment variables. Never commit the real file.
+chapterly:
+  providers:
+    - azure
+  azure:
+    key: your-azure-speech-key
+    region: westeurope
+    voice: en-US-BrianNeural
+    timeout: 8s

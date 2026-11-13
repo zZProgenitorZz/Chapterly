@@ -1,0 +1,23 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: chapterly
+  config:
+    # Optional local overrides (gitignored). See application.yml.example.
+    import: optional:file:./application-local.yml
+
+chapterly:
+  # Providers are tried in this order. Add "kokoro" here once it exists.
+  providers:
+    - azure
+  azure:
+    key: ${AZURE_SPEECH_KEY:}
+    region: ${AZURE_SPEECH_REGION:}
+    voice: en-US-BrianNeural
+    timeout: 8s
+  cors:
+    allowed-origin-patterns:
+      - chrome-extension://*
+      - moz-extension://*
