@@ -82,3 +82,7 @@ Add `-i` to see the `X-TTS-Provider` header. If something goes wrong, run the co
 ```bash
 mvn test
 ```
+
+## Extension
+
+The Chrome extension (Manifest V3) that reads web novel chapters and selected text aloud through this backend is in [`extension/`](extension/). The [extension README](extension/README.md) covers how to load it unpacked, how it's built, and how to test it.

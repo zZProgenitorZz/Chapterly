@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Chapterly</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Chapterly</h1>
+      <span id="status" class="pill" data-status="idle">Idle</span>
+    </header>
+
+    <section class="now" aria-live="polite">
+      <p id="title" class="title">Nothing loaded</p>
+      <p class="meta">
+        <span id="extractor"></span>
+        <span id="progress"></span>
+        <span id="provider"></span>
+      </p>
+    </section>
+
+    <div id="error" class="error" role="alert" hidden>
+      <strong id="error-text"></strong>
+      <small id="error-detail"></small>
+    </div>
+    <p id="notice" class="notice" hidden></p>
+
+    <div class="actions">
+      <button id="read-chapter" class="primary" type="button">Read chapter</button>
+      <button id="read" type="button">Read selection</button>
+    </div>
+
+    <div class="controls">
+      <button id="previous" type="button" title="Previous chunk" aria-label="Previous chunk" disabled>⏮</button>
+      <button id="toggle" type="button" disabled>Play</button>
+      <button id="next" type="button" title="Next chunk" aria-label="Next chunk" disabled>⏭</button>
+      <button id="stop" type="button" title="Stop" aria-label="Stop" disabled>⏹</button>
+    </div>
+
+    <footer>
+      <a href="#" id="options">Settings</a>
+    </footer>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

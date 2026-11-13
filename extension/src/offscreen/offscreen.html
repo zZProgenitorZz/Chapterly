@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Chapterly audio</title>
+  </head>
+  <body>
+    <!-- Hidden document that owns audio playback (offscreen reason AUDIO_PLAYBACK).
+         Two elements alternate so the next chunk is preloaded while one plays. -->
+    <audio id="audio-a" preload="auto"></audio>
+    <audio id="audio-b" preload="auto"></audio>
+    <script type="module" src="offscreen.js"></script>
+  </body>
+</html>

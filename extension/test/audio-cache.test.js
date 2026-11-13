@@ -1,0 +1,131 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { AudioCache } from '../src/player/audio-cache.js';
+import { BackendError } from '../src/player/tts-client.js';
+import { controllableFetch, fakeUrls, flush } from './helpers/fakes.js';
+
+const texts = (n) => Array.from({ length: n }, (_, i) => `chunk ${i}`);
+
+function setup(n = 10, opts = {}) {
+  const net = controllableFetch();
+  const urls = fakeUrls();
+  const cache = new AudioCache({ fetchSpeech: net.fetchSpeech, texts: texts(n), urls, retryDelayMs: 0, ...opts });
+  return { cache, net, urls };
+}
+
+test('prefetch window: current + 2 ahead, at most 2 requests in flight', async () => {
+  const { cache, net } = setup();
+  cache.setCurrent(0);
+  await flush();
+  assert.deepEqual(
+    net.pending().map((r) => r.text),
+    ['chunk 0', 'chunk 1'],
+    'closest first, capped at 2',
+  );
+  assert.deepEqual(cache.indexes(), [0, 1, 2]);
+  assert.equal(cache.state(2), 'queued');
+
+  net.byText('chunk 0').resolve();
+  await flush();
+  assert.deepEqual(
+    net.pending().map((r) => r.text),
+    ['chunk 1', 'chunk 2'],
+    'the third starts when a slot frees up',
+  );
+  assert.equal(cache.inFlight, 2);
+});
+
+test('get() resolves with an object URL and the provider', async () => {
+  const { cache, net, urls } = setup();
+  cache.setCurrent(0);
+  const audio = cache.get(0);
+  await flush();
+  net.byText('chunk 0').resolve('azure');
+  const { url, provider } = await audio;
+  assert.equal(provider, 'azure');
+  assert.ok(urls.live.has(url));
+});
+
+test('moving forward keeps the previous chunk and revokes older ones', async () => {
+  const { cache, net, urls } = setup();
+  cache.setCurrent(0);
+  for (let i = 0; i < 4; i++) {
+    await flush();
+    for (const r of net.pending()) r.resolve();
+  }
+  await flush();
+  const url0 = (await cache.get(0)).url;
+  const url1 = (await cache.get(1)).url;
+
+  cache.setCurrent(1);
+  assert.ok(urls.live.has(url0), 'chunk 0 is only 1 behind: kept');
+  cache.setCurrent(2);
+  assert.ok(!urls.live.has(url0), 'chunk 0 is 2 behind: revoked');
+  assert.ok(urls.live.has(url1));
+  assert.deepEqual(cache.indexes(), [1, 2, 3, 4]);
+});
+
+test('seeking aborts in-flight prefetches that are no longer needed', async () => {
+  const { cache, net } = setup(20);
+  cache.setCurrent(0);
+  await flush();
+  const [r0, r1] = net.pending();
+
+  cache.setCurrent(10);
+  await flush();
+  assert.ok(r0.signal.aborted && r1.signal.aborted, 'old requests aborted');
+  assert.deepEqual(
+    net.pending().map((r) => r.text),
+    ['chunk 10', 'chunk 11'],
+  );
+  assert.deepEqual(cache.indexes(), [10, 11, 12]);
+});
+
+test('a dropped (aborted) entry does not cause unhandled rejections', async () => {
+  const { cache } = setup();
+  cache.setCurrent(0);
+  cache.clear();
+  await flush();
+  assert.deepEqual(cache.indexes(), []);
+});
+
+test('a failed request is retried once', async () => {
+  const { cache, net } = setup();
+  const audio = cache.get(0);
+  await flush();
+  net.byText('chunk 0').reject(new BackendError('http://x', 503, 'QUOTA', 'quota'));
+  await flush();
+  assert.equal(net.requests.filter((r) => r.text === 'chunk 0').length, 2, 'retried');
+  net.byText('chunk 0').resolve();
+  assert.equal((await audio).provider, 'azure');
+});
+
+test('a second failure rejects with the chunk index; get() then tries again', async () => {
+  const { cache, net } = setup();
+  const audio = cache.get(3);
+  await flush();
+  net.byText('chunk 3').reject(new BackendError('http://x', 502, 'UPSTREAM_ERROR', 'boom'));
+  await flush();
+  net.byText('chunk 3').reject(new BackendError('http://x', 502, 'UPSTREAM_ERROR', 'boom'));
+  const err = await audio.catch((e) => e);
+  assert.equal(err.chunkIndex, 3);
+  assert.equal(err.reason, 'UPSTREAM_ERROR');
+  assert.equal(cache.state(3), 'failed');
+
+  const again = cache.get(3);
+  await flush();
+  net.byText('chunk 3').resolve();
+  assert.equal((await again).provider, 'azure');
+});
+
+test('clear() revokes every URL and aborts every request', async () => {
+  const { cache, net, urls } = setup();
+  cache.setCurrent(0);
+  await flush();
+  net.byText('chunk 0').resolve();
+  await flush();
+  cache.clear();
+  await flush();
+  assert.equal(urls.live.size, 0);
+  assert.ok(net.requests.filter((r) => !r.settled).every((r) => r.aborted));
+});

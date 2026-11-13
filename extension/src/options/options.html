@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Chapterly settings</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --muted: #6b6f7b;
+        --ok: #2e7d32;
+        --err: #c62828;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --muted: #9a9eaa;
+          --ok: #81c784;
+          --err: #ff8a80;
+        }
+      }
+      body {
+        font: 14px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif;
+        margin: 16px;
+        min-width: 360px;
+      }
+      label {
+        display: block;
+        font-weight: 600;
+        margin-bottom: 4px;
+      }
+      input {
+        width: 100%;
+        box-sizing: border-box;
+        font: inherit;
+        padding: 6px 8px;
+      }
+      .hint {
+        color: var(--muted);
+        font-size: 12px;
+        margin: 6px 0 12px;
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      button {
+        font: inherit;
+        padding: 5px 12px;
+      }
+      #message[data-kind='ok'] {
+        color: var(--ok);
+      }
+      #message[data-kind='error'] {
+        color: var(--err);
+      }
+    </style>
+  </head>
+  <body>
+    <form id="form">
+      <label for="backendUrl">Backend URL</label>
+      <input id="backendUrl" name="backendUrl" type="url" required spellcheck="false" />
+      <p class="hint">
+        The local Chapterly backend. Default: <code>http://localhost:8080</code>. The extension has host
+        permission for localhost:8080 and 127.0.0.1:8080; any other address works only through the
+        backend's CORS settings.
+      </p>
+      <div class="row">
+        <button type="submit">Save</button>
+        <button type="button" id="reset">Reset to default</button>
+        <span id="message" role="status"></span>
+      </div>
+    </form>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

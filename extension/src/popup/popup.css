@@ -1,0 +1,161 @@
+:root {
+  --bg: #ffffff;
+  --fg: #1c1d22;
+  --muted: #6b6f7b;
+  --border: #e2e4ea;
+  --accent: #3949ab;
+  --accent-fg: #ffffff;
+  --error-bg: #fdecea;
+  --error-fg: #b71c1c;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1d1e23;
+    --fg: #ececf1;
+    --muted: #9a9eaa;
+    --border: #34363e;
+    --accent: #7986cb;
+    --accent-fg: #101114;
+    --error-bg: #3b1f1f;
+    --error-fg: #ff8a80;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  width: 300px;
+  margin: 0;
+  padding: 14px;
+  font: 13px/1.4 system-ui, -apple-system, 'Segoe UI', sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.pill {
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.pill[data-status='playing'],
+.pill[data-status='loading'],
+.pill[data-status='buffering'] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.pill[data-status='error'] {
+  border-color: var(--error-fg);
+  color: var(--error-fg);
+}
+
+.now {
+  margin-bottom: 10px;
+}
+
+.title {
+  margin: 0 0 2px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.meta {
+  margin: 0;
+  color: var(--muted);
+  display: flex;
+  gap: 10px;
+  min-height: 1.4em;
+}
+
+.error {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  border-radius: 6px;
+  background: var(--error-bg);
+  color: var(--error-fg);
+}
+
+.error small:empty {
+  display: none;
+}
+
+.notice {
+  margin: 0 0 10px;
+  color: var(--muted);
+}
+
+[hidden] {
+  display: none !important;
+}
+
+button {
+  font: inherit;
+  padding: 7px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 600;
+}
+
+.actions {
+  display: grid;
+  grid-template-columns: 3fr 2fr;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.controls {
+  display: grid;
+  grid-template-columns: 1fr 2fr 1fr 1fr;
+  gap: 8px;
+}
+
+.meta span:empty {
+  display: none;
+}
+
+footer {
+  margin-top: 12px;
+  text-align: right;
+}
+
+footer a {
+  color: var(--muted);
+}
