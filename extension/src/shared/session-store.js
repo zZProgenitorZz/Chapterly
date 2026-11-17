@@ -63,7 +63,13 @@ export function toPlayerSession(session) {
     sessionId: session.sessionId,
     title: session.title,
     chunks: session.chunks,
-    meta: { kind: session.kind, extractorId: session.extractorId ?? null, url: session.url ?? null },
+    meta: {
+      kind: session.kind,
+      extractorId: session.extractorId ?? null,
+      url: session.url ?? null,
+      seriesTitle: session.seriesTitle ?? null,
+      nextChapterUrl: session.nextChapterUrl ?? null,
+    },
   };
 }
 
@@ -73,7 +79,7 @@ export function toPlayerSession(session) {
  * already has this session. `voice` ({provider, voice}) is the current voice selection,
  * so a recreated offscreen document keeps reading with the chosen voice.
  */
-export function buildRestorePayload(session, playerState, snapshot, backendUrl, voice = null) {
+export function buildRestorePayload(session, playerState, snapshot, backendUrl, voice = null, playbackRate = 1) {
   if (!session?.chunks?.length) return null;
   if (playerState?.sessionId === session.sessionId) return null;
   const startIndex = Math.min(Math.max(0, session.currentIndex ?? 0), session.chunks.length - 1);
@@ -83,7 +89,82 @@ export function buildRestorePayload(session, playerState, snapshot, backendUrl, 
     session: toPlayerSession(session),
     backendUrl,
     voice,
+    playbackRate,
     startIndex,
     startTime: samePlace ? snapshot.position ?? 0 : 0,
   };
 }
+
+// ---------- remembered positions per novel (chrome.storage.local) ----------
+//
+// positions: { [novelKey]: {url, title, seriesTitle, paragraphIndex, chunkIndex,
+//                           paragraphCount, finished, updatedAt} }
+// novelKey = extractorId + seriesTitle when the extractor knows the series (one entry
+// per novel, the latest chapter wins), else the chapter URL. Matching on "Read chapter"
+// is by exact chapter URL and by paragraphIndex (chunking can change between versions).
+
+const KEY_POSITIONS = 'positions';
+export const MAX_POSITIONS = 200;
+
+export function novelKey({ extractorId, seriesTitle, url }) {
+  return seriesTitle ? `${extractorId ?? 'site'}:${seriesTitle}` : `url:${url}`;
+}
+
+/**
+ * @param {chrome.storage.StorageArea} area defaults to chrome.storage.local
+ */
+export function createPositionStore(area, { limit = MAX_POSITIONS, now = () => Date.now() } = {}) {
+  let queue = Promise.resolve();
+  const serial = (fn) => {
+    const run = queue.then(fn, fn);
+    queue = run.catch(() => {});
+    return run;
+  };
+  const readAll = async () => (await area.get(KEY_POSITIONS))[KEY_POSITIONS] ?? {};
+
+  return {
+    /** Saves where a chapter session is; keeps the newest `limit` novels. */
+    save: (session, { paragraphIndex, chunkIndex, paragraphCount = null, finished = false }) =>
+      serial(async () => {
+        if (!session?.url || paragraphIndex == null) return null;
+        const all = await readAll();
+        const entry = {
+          url: session.url,
+          title: session.title ?? '',
+          seriesTitle: session.seriesTitle ?? null,
+          paragraphIndex,
+          chunkIndex,
+          paragraphCount,
+          finished,
+          updatedAt: now(),
+        };
+        all[novelKey(session)] = entry;
+        const keys = Object.keys(all).sort((a, b) => all[b].updatedAt - all[a].updatedAt);
+        for (const key of keys.slice(limit)) delete all[key];
+        await area.set({ [KEY_POSITIONS]: all });
+        return entry;
+      }),
+
+    /** The stored position for this exact chapter URL, or null. */
+    findForUrl: (url) =>
+      serial(async () => Object.values(await readAll()).find((p) => p.url === url) ?? null),
+
+    getAll: () => serial(readAll),
+
+    forget: () => serial(() => area.remove(KEY_POSITIONS)),
+  };
+}
+
+/**
+ * Whether "Resume from paragraph N" should be offered: not at the very start, not at
+ * the end, not finished.
+ */
+export function resumeOffer(position, paragraphCount) {
+  if (!position || position.finished) return null;
+  const p = position.paragraphIndex;
+  if (!Number.isInteger(p) || p <= 0 || p >= paragraphCount - 1) return null;
+  return { paragraphIndex: p, paragraphNumber: p + 1, paragraphCount };
+}
+
+let defaultPositions = null;
+export const positions = () => (defaultPositions ??= createPositionStore(chrome.storage.local));

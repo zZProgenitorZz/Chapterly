@@ -1,4 +1,5 @@
-import { DEFAULTS, getSettings, saveSettings } from '../shared/settings.js';
+import { DEFAULTS, formatRate, getSettings, saveSettings } from '../shared/settings.js';
+import { positions } from '../shared/session-store.js';
 import { fetchSpeech, fetchVoices, toErrorInfo } from '../player/tts-client.js';
 import { describeError } from '../shared/error-messages.js';
 import { describeVoice, parseVoiceKey, renderVoiceOptions } from '../shared/voices.js';
@@ -93,7 +94,71 @@ form.addEventListener('submit', (e) => {
 
 document.getElementById('reset').addEventListener('click', () => save(DEFAULTS.backendUrl));
 
+// ---------- speed, reading behaviour, shortcuts, positions ----------
+
+const speed = document.getElementById('speed');
+const speedValue = document.getElementById('speed-value');
+const CHECKBOXES = ['autoNextChapter', 'arrowKeysControl', 'clickToJump'];
+
+function renderSpeed(rate) {
+  speed.value = String(rate);
+  speedValue.textContent = formatRate(rate);
+}
+
+speed.addEventListener('input', () => (speedValue.textContent = formatRate(speed.value)));
+speed.addEventListener('change', () => saveSettings({ playbackRate: speed.value }).then((s) => renderSpeed(s.playbackRate)));
+document.getElementById('speed-reset').addEventListener('click', () =>
+  saveSettings({ playbackRate: DEFAULTS.playbackRate }).then((s) => renderSpeed(s.playbackRate)),
+);
+
+for (const key of CHECKBOXES) {
+  const box = document.getElementById(key);
+  box.addEventListener('change', () => saveSettings({ [key]: box.checked }));
+}
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'sync') return;
+  if ('playbackRate' in changes) renderSpeed(changes.playbackRate.newValue ?? DEFAULTS.playbackRate);
+  for (const key of CHECKBOXES) {
+    if (key in changes) document.getElementById(key).checked = Boolean(changes[key].newValue ?? DEFAULTS[key]);
+  }
+});
+
+async function loadShortcuts() {
+  const list = document.getElementById('shortcut-list');
+  const commands = (await chrome.commands?.getAll?.().catch(() => [])) ?? [];
+  list.replaceChildren(
+    ...commands
+      .filter((c) => c.description)
+      .map((c) => {
+        const li = document.createElement('li');
+        li.textContent = `${c.description}: ${c.shortcut || 'not set'}`;
+        return li;
+      }),
+  );
+}
+
+document.getElementById('edit-shortcuts').addEventListener('click', () => {
+  chrome.tabs.create({ url: 'chrome://extensions/shortcuts' });
+});
+
+const positionsMessage = document.getElementById('positions-message');
+async function showPositionCount() {
+  const count = Object.keys(await positions().getAll()).length;
+  document.getElementById('positions-info').textContent =
+    `Chapterly remembers where you stopped in each novel (${count} saved, at most 200).`;
+}
+document.getElementById('forget-positions').addEventListener('click', async () => {
+  await positions().forget();
+  show(positionsMessage, 'Forgotten', 'ok');
+  await showPositionCount();
+});
+
 getSettings().then((s) => {
   input.value = s.backendUrl;
+  renderSpeed(s.playbackRate);
+  for (const key of CHECKBOXES) document.getElementById(key).checked = s[key];
   void loadVoices();
 });
+void loadShortcuts();
+void showPositionCount();

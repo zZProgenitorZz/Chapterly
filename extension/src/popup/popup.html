@@ -26,6 +26,24 @@
     </div>
     <p id="notice" class="notice" hidden></p>
 
+    <!-- Remembered position for this chapter -->
+    <div id="resume" class="box" hidden>
+      <p id="resume-text"></p>
+      <div class="row">
+        <button id="resume-yes" class="primary" type="button"></button>
+        <button id="resume-no" type="button">Start from the top</button>
+      </div>
+    </div>
+
+    <!-- End of chapter / auto-next status -->
+    <div id="chapter" class="box" hidden>
+      <p id="chapter-text"></p>
+      <div class="row">
+        <button id="next-chapter" class="primary" type="button" hidden>Next chapter</button>
+        <button id="allow-site" type="button" hidden>Allow on this site</button>
+      </div>
+    </div>
+
     <div class="actions">
       <button id="read-chapter" class="primary" type="button">Read chapter</button>
       <button id="read" type="button">Read selection</button>
@@ -38,14 +56,27 @@
       </select>
     </label>
 
+    <div class="speed" role="group" aria-label="Speed">
+      <span>Speed</span>
+      <button id="slower" type="button" title="Slower (−0.1x)" aria-label="Slower">−</button>
+      <button id="rate" type="button" class="rate" title="Click to reset to 1x">1x</button>
+      <button id="faster" type="button" title="Faster (+0.1x)" aria-label="Faster">+</button>
+    </div>
+
     <div class="controls">
-      <button id="previous" type="button" title="Previous chunk" aria-label="Previous chunk" disabled>⏮</button>
+      <button id="previous" type="button" title="Previous (restart if more than 3 s in)" aria-label="Previous" disabled>⏮</button>
       <button id="toggle" type="button" disabled>Play</button>
-      <button id="next" type="button" title="Next chunk" aria-label="Next chunk" disabled>⏭</button>
+      <button id="next" type="button" title="Next paragraph part" aria-label="Next" disabled>⏭</button>
       <button id="stop" type="button" title="Stop" aria-label="Stop" disabled>⏹</button>
     </div>
 
+    <label class="toggle-row">
+      <input id="auto-next" type="checkbox" />
+      <span>Continue with the next chapter</span>
+    </label>
+
     <footer>
+      <small id="shortcuts" class="hint"></small>
       <a href="#" id="options">Settings</a>
     </footer>
 

@@ -182,3 +182,59 @@ footer {
 footer a {
   color: var(--muted);
 }
+
+.box {
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.box p {
+  margin: 0 0 6px;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.speed {
+  display: grid;
+  grid-template-columns: auto 32px 1fr 32px;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  color: var(--muted);
+}
+
+.speed button {
+  padding: 4px 0;
+}
+
+.speed .rate {
+  font-variant-numeric: tabular-nums;
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  color: var(--fg);
+}
+
+footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 8px;
+  text-align: left;
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
