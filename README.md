@@ -120,6 +120,35 @@ For any other override, copy `application.yml.example` to `application-local.yml
 mvn spring-boot:run      # from the repo root
 ```
 
+## Run with Docker
+
+One command starts everything the extension needs, Kokoro and the backend:
+
+```bash
+docker compose up -d             # build the backend image, start both services
+docker compose logs -f backend   # follow the backend log
+docker compose down              # stop and remove the containers
+```
+
+**Ports:** the backend is at `http://localhost:8080` and Kokoro at `http://localhost:8880`. Both are bound to `127.0.0.1` only. If one of those ports is taken, set `CHAPTERLY_BACKEND_PORT` or `CHAPTERLY_KOKORO_PORT` before `up`. The extension's backend URL (Settings) must match.
+
+**First start:**
+- The Kokoro CPU image is large (about 5 GB; the GPU image about 13 GB), so the first `up` takes a while to download.
+- Kokoro then loads its model, and the first request can take several seconds.
+- Until Kokoro is ready, the backend reports "Kokoro server not reachable", or falls back to Azure if Azure is configured.
+- `docker compose ps` shows Kokoro as `healthy` once it's ready.
+
+**Azure** is optional: Compose passes `./.env` to the backend as real environment variables (`env_file`, `required: false`).
+- **Not baked into the image:** `.dockerignore` excludes `.env`, so the key is never part of the image.
+- **Inside the container:** there's no `./.env`, so the backend's optional file import does nothing, and the environment variables apply as usual.
+- **Kokoro address:** Compose points the backend at the Kokoro service (`KOKORO_BASE_URL=http://kokoro:8880`).
+
+**GPU (NVIDIA):** this needs the NVIDIA Container Toolkit. In `docker-compose.yml`, replace the `kokoro` service with the commented-out GPU variant below it: the `kokoro-fastapi-gpu` image plus `deploy.resources.reservations.devices`. Then run `docker compose up -d` again.
+
+**Development:** `mvn spring-boot:run` still works as before. Run Kokoro on its own (`docker compose up -d kokoro` or the `docker run` command above), then start the backend from the repo root.
+
+The backend image (`Dockerfile`) is a multi-stage build. It compiles with `maven:3.9-eclipse-temurin-21`, using a BuildKit cache for `~/.m2`, and runs the jar on `eclipse-temurin:21-jre` as a non-root user.
+
 ## API
 
 ### `POST /api/tts`

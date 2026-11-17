@@ -1,0 +1,60 @@
+# Everything the Chapterly extension needs: docker compose up -d
+#
+#   kokoro   local Kokoro-FastAPI text-to-speech (CPU image; GPU variant below)
+#   backend  Chapterly backend on http://localhost:8080
+#
+# Both ports are bound to 127.0.0.1 only. Host ports can be changed with
+# CHAPTERLY_KOKORO_PORT / CHAPTERLY_BACKEND_PORT (e.g. in your shell).
+# Azure is optional: put AZURE_SPEECH_KEY / AZURE_SPEECH_REGION in ./.env.
+
+services:
+  kokoro:
+    image: ghcr.io/remsky/kokoro-fastapi-cpu:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${CHAPTERLY_KOKORO_PORT:-8880}:8880"
+    healthcheck:
+      # curl is part of the Kokoro-FastAPI images.
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:8880/v1/audio/voices"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s # first start loads the model
+
+  # GPU variant (NVIDIA + NVIDIA Container Toolkit): replace the kokoro service above with
+  #
+  # kokoro:
+  #   image: ghcr.io/remsky/kokoro-fastapi-gpu:latest
+  #   restart: unless-stopped
+  #   ports:
+  #     - "127.0.0.1:${CHAPTERLY_KOKORO_PORT:-8880}:8880"
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:8880/v1/audio/voices"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #     start_period: 120s
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: all
+  #             capabilities: [gpu]
+
+  backend:
+    build: .
+    image: chapterly-backend:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${CHAPTERLY_BACKEND_PORT:-8080}:8080"
+    env_file:
+      - path: .env
+        required: false # works without Azure
+    environment:
+      KOKORO_BASE_URL: http://kokoro:8880
+    depends_on:
+      kokoro:
+        # Not "service_healthy": the backend starts right away and reports Kokoro as
+        # not reachable (or falls back to Azure) until the model has loaded.
+        condition: service_started
