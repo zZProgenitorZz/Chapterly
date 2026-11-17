@@ -44,6 +44,7 @@
     }
     cleaning.clearIds(doc);
     ns.paragraphElements = elements;
+    ns.paragraphTexts = paragraphs.map((p) => p.text); // click/highlight offsets refer to these
 
     const url = cleaning.stripHash(doc.location.href);
     ns.extractedUrl = url;

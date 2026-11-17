@@ -15,8 +15,10 @@ export const CONTENT_SCRIPT_FILES = [
   'src/content/lib/Readability.js',
   'src/content/cleaning.js',
   'src/content/links.js',
+  'src/content/text-map.js',
   'src/content/extractors/generic.js',
   ...SITE_EXTRACTORS.map((id) => `src/content/extractors/${id}.js`),
   'src/content/extract.js',
   'src/content/highlight.js',
+  'src/content/page-controls.js',
 ];

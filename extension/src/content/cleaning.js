@@ -240,6 +240,8 @@
     HIDDEN_ATTR,
     ID_ATTR,
     P_ATTR,
+    BLOCK_TAGS,
+    SKIP_IN_CONTENT,
     normalizeText,
     isNoteBlock,
     isHidden,

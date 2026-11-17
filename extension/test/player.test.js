@@ -445,3 +445,17 @@ test('five quick next() calls: lands on +5, exactly one element plays, no stale 
   );
   assert.ok(audios.every((a) => a === active || a.paused));
 });
+
+// ---------- speed ----------
+
+test('playbackRate applies to both elements with preservesPitch, and survives new chunks', async () => {
+  const { player, audios, resolveAll } = setup(4);
+  assert.ok(audios.every((a) => a.preservesPitch === true));
+  player.playbackRate = 1.3;
+  player.play();
+  await resolveAll();
+  audios[0].finish();
+  await resolveAll();
+  assert.ok(audios.every((a) => a.playbackRate === 1.3 && a.defaultPlaybackRate === 1.3));
+  assert.equal(player.getState().playbackRate, 1.3);
+});
