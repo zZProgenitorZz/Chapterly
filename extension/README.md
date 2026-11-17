@@ -16,6 +16,63 @@ The first time you click **Read chapter** on a site, Chrome asks for permission 
 
 To change the backend URL, open the popup and click **Settings**. The default is `http://localhost:8080`.
 
+## Controls while reading
+
+Reading works much like Microsoft Edge's Read Aloud. Every chunk is one paragraph. A long paragraph (over 600 characters) is read in parts, split on sentence boundaries, and the part being read gets an extra highlight.
+
+| Action | Popup | Global shortcut | On the chapter page |
+|---|---|---|---|
+| Play / pause | ⏯ button | `Alt+Shift+P` | `k` |
+| Next chunk (next paragraph, or next part of a long one) | ⏭ | | `→` |
+| Previous chunk (restarts the current one if more than 3 s in) | ⏮ | | `←` |
+| Next paragraph (skips any remaining parts) | | `Alt+Shift+Right` | |
+| Previous paragraph | | `Alt+Shift+Left` | |
+| Faster / slower (±0.1x) | `+` / `−` (click the value to reset to 1x) | not set by default | |
+| Jump to a paragraph | | | click it |
+
+**Global shortcuts** work even when another tab has focus. Chrome allows at most four suggested keys, so "faster" and "slower" have none. You can set or change every shortcut in `chrome://extensions/shortcuts` (Settings has a button for it). The popup footer shows the keys that are actually in effect.
+
+**"Previous paragraph"** follows the same rule as ⏮: if you're already past the first part of the current paragraph, or more than 3 seconds into it, it goes back to the start of that paragraph first.
+
+**Page keys** (`←`, `→`, `k`) only work on the page of the chapter being read, and only while "Arrow keys control reading" is on (the default). They're ignored while you type in a field or hold a modifier key. Space is left alone so it still scrolls the page. Some novel sites use the arrow keys for their own chapter navigation; while a chapter is being read, Chapterly takes those keys.
+
+**Skipping is instant** whenever the target is already prefetched, which is usual, because the player keeps about 1500 characters (up to 6 chunks) requested ahead. Pressing next several times quickly never overlaps audio or plays a stale chunk.
+
+### Click to jump
+
+While a chapter is being read, a plain click on a paragraph jumps reading to that spot and keeps playing (or starts, if paused or stopped). Paragraphs show a pointer and a faint dotted underline on hover, so it's clear they're clickable.
+
+- **Precision:** the clicked word is found with `document.caretPositionFromPoint` (falling back to `caretRangeFromPoint`). Its offset is mapped onto the same normalised text the extractor produced, and reading starts at the part of the paragraph that contains it. Clicking a paragraph's padding, or anywhere without a text caret, starts at the paragraph's first part.
+- **No jump when:** you click a link, button or form control; you select text; you double-click; you hold a modifier key; or "Click a paragraph to read from there" is off in Settings.
+- **Approximation:** if a paragraph's live text can't be matched exactly to the extracted text, the click starts at that paragraph's beginning. This can happen with the generic extractor, which sometimes maps a paragraph to a wrapper element, or with text Chapterly dropped, such as an author's-note line.
+- The right-click item **Chapterly: read from here** still works.
+
+### Speed
+
+Speed ranges from 0.75x to 2.5x in steps of 0.1x. You can change it in the popup or with the faster/slower shortcuts, and set a default in Settings.
+- **Instant:** it's the audio element's `playbackRate` (pitch preserved), so changing it never requests new audio and prefetched chunks stay valid.
+- **Remembered:** it's saved in `chrome.storage.sync` as `playbackRate` and sent with every session load, including a restore after a long pause.
+
+### Continue with the next chapter
+
+**"Continue with the next chapter"** is a checkbox in the popup and in Settings. It's **off** by default, and it's checked when a chapter *ends*, so switching it while a chapter plays counts for that chapter.
+
+- **When on:** at the end of a chapter, Chapterly:
+  1. navigates the same tab to the chapter's next-chapter link (the badge shows `→`),
+  2. waits for the page to load (up to 20 seconds),
+  3. extracts the chapter, and starts reading it.
+- **When off:** reading stops, the badge shows `✓`, and the popup shows "Chapter finished" with a **Next chapter** button that runs the same steps once.
+- **Site permission:** automatic continuation needs Chapterly's access to that site. That's the per-site permission the popup asks for the first time you click **Read chapter**. Without it, the popup says "Allow Chapterly on this site to continue automatically" and offers an **Allow on this site** button.
+- **If you moved on** (navigated the tab elsewhere or closed it), nothing happens. If the next page has no chapter text, reading stops with a notice.
+
+### Remembered positions
+
+Chapterly remembers where you are in each novel, in `chrome.storage.local` under `positions`.
+- **What's stored:** one entry per novel. The key is the extractor plus the series title, or the chapter URL when the series isn't known. At most 200 novels are kept; the oldest are dropped.
+- **When it's saved:** at most every 5 seconds while reading, and also on pause, on stop and at the end of a chapter.
+- **Resuming:** when you click **Read chapter** on the exact chapter URL of a saved position that isn't at the very start or end, the popup offers **Resume from paragraph N** (the default) or **Start from the top**. Positions are matched by paragraph, not chunk, because chunking can change between versions.
+- **Settings → Forget saved positions** clears them all.
+
 ## Choosing a voice
 
 The voice list comes from the backend (`GET /api/voices`), grouped by provider:
@@ -72,12 +129,12 @@ popup ──READ_CHAPTER / READ_SELECTION / PLAYER_COMMAND──▶ service work
 
 **Player:**
 - `load({sessionId, title, chunks, startIndex, startTime})`.
-- Commands: `play`, `pause`, `stop`, `seekToChunk`, `next`, `previous`. `previous` restarts the current chunk if you're more than 3 seconds in; otherwise it goes back one chunk.
+- Commands: `play`, `pause`, `stop`, `seekToChunk`, `next`, `previous`, `nextParagraph`, `previousParagraph`, `setVoice`. `previous` restarts the current chunk if you're more than 3 seconds in; otherwise it goes back one chunk.
 - `playbackRate` is a field, defaulting to 1, and applies to both audio elements.
 - States: `idle`, `loading`, `buffering`, `playing`, `paused`, `error`.
 
 **AudioCache:**
-- Keeps up to 2 chunks requested ahead of the current one, with at most 2 requests in flight.
+- Keeps chunks requested ahead of the current one until at least 1500 characters or 6 chunks are queued, whichever comes first, with at most 2 requests in flight.
 - Retries a failed request once after 1 second.
 - Aborts requests that a seek made unnecessary, and revokes object URLs for chunks more than 1 behind.
 
@@ -90,7 +147,7 @@ popup ──READ_CHAPTER / READ_SELECTION / PLAYER_COMMAND──▶ service work
    3. It picks the first site extractor whose `matches(location, document)` is true, falling back to the generic extractor.
    4. It tags each paragraph's live element with `data-chapterly-p="<index>"` so it can be highlighted.
 3. **Check.** If there are fewer than 3 paragraphs or under 500 characters, the popup shows "No chapter text found on this page".
-4. **Chunk and store.** The paragraphs become chunks: short paragraphs (such as dialogue) merge up to 200 characters, long ones split on sentence boundaries at 1200 characters, and the first chunk is at most 400 characters so audio starts quickly. The session (`{sessionId, tabId, url, title, extractorId, nextChapterUrl, prevChapterUrl, chunks, currentIndex}`) is saved as `activeSession` in `chrome.storage.session`.
+4. **Chunk and store.** Each paragraph becomes its own chunk; paragraphs are never merged. A paragraph over 600 characters is split on sentence boundaries into parts. Each chunk records `paragraphIndex`, `part`/`parts`, and `startOffset`/`endOffset` within the normalised paragraph text. The very first chunk is at most 400 characters, so audio starts quickly. The session (`{sessionId, tabId, url, title, extractorId, nextChapterUrl, prevChapterUrl, chunks, currentIndex}`) is saved as `activeSession` in `chrome.storage.session`.
 5. **Play.** The offscreen Player plays the chunks. While element A plays chunk *i*, element B already holds chunk *i+1*, so on `ended` B starts at once. If *i+1* isn't ready yet, the status becomes `buffering`.
 6. **Follow along.** On every `chunkStarted`, the service worker:
    - stores `currentIndex`,
@@ -149,8 +206,13 @@ Test files:
   - mapping paragraphs to live elements.
 
   The content scripts are evaluated in jsdom in the same order they are injected. jsdom's `getComputedStyle` only sees inline styles and `<style>` tags, so the hidden fixture text uses `<style>` classes.
-- `chunker.test.js`: merging, splitting, the first-chunk limit, and `maxChars` staying well below the backend's 3000-character limit.
-- `audio-cache.test.js`: the prefetch window, the in-flight limit, abort on seek, URL revocation and retry. Uses a mock fetch.
+- `chunker.test.js`: one chunk per paragraph (dialogue lines stay separate), sentence splitting with parts and offsets, the first-chunk limit, the backend limit, and the position and paragraph lookups.
+- `audio-cache.test.js`: the fixed and size-based prefetch windows, the in-flight limit, abort on seek, URL revocation and retry. Uses a mock fetch.
+- `page-controls.test.js`: key handling (ignored without a session, with the setting off, with modifiers, and in inputs) and click rules (links, buttons, selection, double click). Also click-offset-to-chunk mapping on the fixtures, including `<br>`-separated text with hidden spans, and sentence ranges.
+- `chapter-flow.test.js`: auto-next with fake `chrome.tabs`. Covers:
+  - setting off stops at the end; a toggle during the chapter is respected;
+  - the manual "Next chapter" button;
+  - no permission, a tab that moved on or was closed, no chapter text, load timeout, a superseded session, and double triggers.
 - `player.test.js`: uses fake audio elements. Covers:
   - gapless hand-over between the two elements, buffering, and resuming;
   - the error after a retry, naming the chunk;
@@ -181,6 +243,27 @@ Run these with the backend running at `http://localhost:8080`.
 - [ ] **End of chapter:** the badge shows `✓`, and the service worker console logs "session finished" with the next chapter URL.
 - [ ] **Backend stopped:** the popup shows "Chunk n failed: Backend not reachable at …" and the badge shows `!`. Start the backend again and press **Retry**; reading continues from that chunk.
 - [ ] **Read selection** still works as in step 2.
+
+**Controls, speed, next chapter, positions:**
+- [ ] **Dialogue:** a chapter with short dialogue lines reads them one per chunk. ⏭ moves exactly one line, and the counter shows one chunk per paragraph.
+- [ ] **Skipping:** press ⏭ or `→` five times quickly. It lands five chunks further, almost instantly, with no overlapping or stale audio.
+- [ ] **Paragraph shortcuts:** `Alt+Shift+Right` and `Alt+Shift+Left` move by whole paragraphs, also while another tab is focused. `Alt+Shift+P` toggles playback.
+- [ ] **Page keys:** on the chapter page, `→`, `←` and `k` work. Typing in the site's search or comment box isn't hijacked. Space still scrolls. With "Arrow keys control reading" off, the site's own arrow-key navigation works again.
+- [ ] **Click to jump:**
+  - Hovering a paragraph shows a pointer.
+  - Clicking a word in a long paragraph starts at the sentence group containing that word.
+  - Clicking a link, selecting text, or double-clicking a word does not jump.
+- [ ] **Speed:**
+  - In the popup, `+`/`−` change the speed at once, and the voice keeps its pitch. Clicking the value resets it to 1x.
+  - After a long pause, the speed is still applied.
+  - The faster/slower shortcuts work once you've assigned keys.
+- [ ] **Auto-next off** (the default): at the end, the popup shows "Chapter finished" and the badge shows `✓`. **Next chapter** loads and reads the next chapter.
+- [ ] **Auto-next on:** tick "Continue with the next chapter" while a chapter is playing. At its end, the badge shows `→`, the next chapter loads in the same tab and plays. Untick it during the next chapter, and that chapter stops at its end.
+- [ ] **Auto-next on a site without permission:** the popup says "Allow Chapterly on this site to continue automatically". **Allow on this site** grants it and continues.
+- [ ] **Positions:**
+  - Stop halfway through a chapter, then click **Read chapter** again. It offers "Resume from paragraph N", and resuming starts there.
+  - "Start from the top" starts at the top.
+  - Settings → **Forget saved positions** removes the offer.
 
 **Voices:**
 - [ ] **Kokoro running, Azure not configured:**
