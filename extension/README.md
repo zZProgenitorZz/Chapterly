@@ -16,6 +16,30 @@ The first time you click **Read chapter** on a site, Chrome asks for permission 
 
 To change the backend URL, open the popup and click **Settings**. The default is `http://localhost:8080`.
 
+## Choosing a voice
+
+The voice list comes from the backend (`GET /api/voices`), grouped by provider:
+- **Kokoro (local)** is the default. Its default voice is `af_heart`, "Heart (US, female)".
+- **Microsoft Azure** voices, such as Brian, can be selected only when the backend has Azure credentials. Otherwise the group shows a single disabled "Not configured on the backend" entry.
+- Each provider's default voice is marked "· default".
+
+**Where to pick it:**
+- **Settings (options page):** the **Voice** select. **Preview** plays "This is how chapters will sound with this voice." If the backend can't be reached, the page shows the error and keeps your stored choice.
+- **Popup:** a compact voice select above the controls, so you can switch while reading.
+
+The choice is saved in `chrome.storage.sync` as `provider` and `voice`. Every TTS request sends it to the backend, which tries that provider first.
+
+**Fallback:** if the chosen provider is down, times out or is out of quota, the backend can answer with another provider's default voice. The popup then shows, for example, **Voice: Brian (Azure, fallback)** instead of **Voice: Heart (Kokoro)**.
+
+**Switching mid-chapter:**
+1. The service worker sees the settings change and sends `PLAYER_SET_VOICE` to the offscreen player.
+2. The player stops the current audio, drops the prefetched chunks (they were made with the old voice) and restarts the **current chunk from its beginning** in the new voice.
+3. If you were paused, it stays paused, with the new voice loaded.
+
+Nothing overlaps, and no old-voice audio plays later. If Chrome closed the offscreen document during a long pause, the restored session uses the voice that's selected now.
+
+The extension needs no extra host permissions for any of this: only the backend talks to Kokoro and Azure.
+
 ## How it works
 
 ```
@@ -38,7 +62,8 @@ popup ──READ_CHAPTER / READ_SELECTION / PLAYER_COMMAND──▶ service work
 | Offscreen document | `src/offscreen/*` | Owns playback with two `<audio>` elements. It fetches audio itself; audio never passes through runtime messaging. |
 | Player | `src/player/player.js` | Plays a session. See the list below. |
 | AudioCache | `src/player/audio-cache.js` | Prefetching. See the list below. |
-| TTS client | `src/player/tts-client.js` | `fetchSpeech(text, {baseUrl, signal})` with typed errors and a 20-second client timeout. |
+| TTS client | `src/player/tts-client.js` | `fetchSpeech(text, {baseUrl, signal, provider, voice})` returns `{blob, provider, voice, fallback}`, read from the `X-TTS-*` headers. `fetchVoices(baseUrl)` gets the voice list. Errors are typed and include the provider from the error body. The client timeout is 45 seconds, above the backend's 30-second Kokoro timeout. |
+| Voices | `src/shared/voices.js`, `src/shared/error-messages.js` | Builds the grouped voice `<select>` and the "Voice: …" line, and turns errors into text that names the provider (for example "Kokoro is not running. Start the Kokoro server on localhost:8880."). |
 | Popup, options | `src/popup/*`, `src/options/*` | The UI and the backend URL setting. |
 
 **Service worker:**
@@ -126,9 +151,16 @@ Test files:
   The content scripts are evaluated in jsdom in the same order they are injected. jsdom's `getComputedStyle` only sees inline styles and `<style>` tags, so the hidden fixture text uses `<style>` classes.
 - `chunker.test.js`: merging, splitting, the first-chunk limit, and `maxChars` staying well below the backend's 3000-character limit.
 - `audio-cache.test.js`: the prefetch window, the in-flight limit, abort on seek, URL revocation and retry. Uses a mock fetch.
-- `player.test.js`: gapless hand-over between the two elements, buffering, the error after a retry with the chunk index, resuming, next/previous/stop with no stray audio, and `playbackRate`. Uses fake audio elements.
-- `session-store.test.js`: `updatePosition`, and restoring after the offscreen document was closed.
-- `tts-client.test.js`, `settings.test.js`: unchanged from step 2.
+- `player.test.js`: uses fake audio elements. Covers:
+  - gapless hand-over between the two elements, buffering, and resuming;
+  - the error after a retry, naming the chunk;
+  - next/previous/stop with no stray audio, and `playbackRate`;
+  - `setVoice`: the cache is cleared, the current chunk restarts in the new voice, paused stays paused, and late responses in the old voice are ignored.
+- `session-store.test.js`: `updatePosition`, and restoring after the offscreen document was closed, including the voice.
+- `tts-client.test.js`: sends the provider and voice, reads the new headers, and covers `fetchVoices` (the happy path and typed errors).
+- `settings.test.js`: the new defaults (Kokoro, `af_heart`) and voice validation.
+- `error-messages.test.js`: error texts that name the provider.
+- `voices.test.js`: the voice `<select>` grouping and the "Voice: …" line.
 
 ### Manual test checklist
 
@@ -149,3 +181,15 @@ Run these with the backend running at `http://localhost:8080`.
 - [ ] **End of chapter:** the badge shows `✓`, and the service worker console logs "session finished" with the next chapter URL.
 - [ ] **Backend stopped:** the popup shows "Chunk n failed: Backend not reachable at …" and the badge shows `!`. Start the backend again and press **Retry**; reading continues from that chunk.
 - [ ] **Read selection** still works as in step 2.
+
+**Voices:**
+- [ ] **Kokoro running, Azure not configured:**
+  - Chapters read with Kokoro `af_heart`, and the popup shows "Voice: Heart (Kokoro)".
+  - In Settings, the Microsoft Azure group shows only a disabled "Not configured on the backend".
+- [ ] **Kokoro stopped** (`docker stop kokoro`):
+  - Without Azure, the popup shows "Chunk n failed: Kokoro is not running. Start the Kokoro server on localhost:8880."
+  - With Azure configured and fallback on, reading continues with Brian, and the popup shows "Voice: Brian (Azure, fallback)".
+- [ ] **Switch voice mid-chapter** in the popup:
+  - The current chunk restarts in the new voice right away, with no overlap and no old-voice chunks later.
+  - Doing it while paused keeps it paused.
+- [ ] **Azure configured:** pick Brian in Settings and press **Preview**, then read a chapter. It reads with Brian.
