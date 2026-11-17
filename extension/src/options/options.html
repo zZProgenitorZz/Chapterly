@@ -20,14 +20,18 @@
       body {
         font: 14px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif;
         margin: 16px;
-        min-width: 360px;
+        min-width: 380px;
+      }
+      section + section {
+        margin-top: 20px;
       }
       label {
         display: block;
         font-weight: 600;
         margin-bottom: 4px;
       }
-      input {
+      input,
+      select {
         width: 100%;
         box-sizing: border-box;
         font: inherit;
@@ -42,34 +46,57 @@
         display: flex;
         gap: 8px;
         align-items: center;
+        flex-wrap: wrap;
       }
       button {
         font: inherit;
         padding: 5px 12px;
       }
-      #message[data-kind='ok'] {
+      [data-kind='ok'] {
         color: var(--ok);
       }
-      #message[data-kind='error'] {
+      [data-kind='error'] {
         color: var(--err);
+      }
+      [data-kind='info'] {
+        color: var(--muted);
       }
     </style>
   </head>
   <body>
-    <form id="form">
-      <label for="backendUrl">Backend URL</label>
-      <input id="backendUrl" name="backendUrl" type="url" required spellcheck="false" />
+    <section>
+      <form id="form">
+        <label for="backendUrl">Backend URL</label>
+        <input id="backendUrl" name="backendUrl" type="url" required spellcheck="false" />
+        <p class="hint">
+          The local Chapterly backend. Default: <code>http://localhost:8080</code>. The extension has host
+          permission for localhost:8080 and 127.0.0.1:8080; any other address works only through the
+          backend's CORS settings.
+        </p>
+        <div class="row">
+          <button type="submit">Save</button>
+          <button type="button" id="reset">Reset to default</button>
+          <span id="message" role="status"></span>
+        </div>
+      </form>
+    </section>
+
+    <section>
+      <label for="voice">Voice</label>
+      <select id="voice" disabled>
+        <option>Loading voices…</option>
+      </select>
       <p class="hint">
-        The local Chapterly backend. Default: <code>http://localhost:8080</code>. The extension has host
-        permission for localhost:8080 and 127.0.0.1:8080; any other address works only through the
-        backend's CORS settings.
+        Kokoro runs locally and is the default. Microsoft Azure voices appear when the backend has Azure
+        credentials. If the chosen voice's provider fails, the backend may fall back to another provider.
       </p>
       <div class="row">
-        <button type="submit">Save</button>
-        <button type="button" id="reset">Reset to default</button>
-        <span id="message" role="status"></span>
+        <button type="button" id="preview" disabled>Preview</button>
+        <span id="voice-message" role="status"></span>
       </div>
-    </form>
+      <audio id="preview-audio" hidden></audio>
+    </section>
+
     <script type="module" src="options.js"></script>
   </body>
 </html>

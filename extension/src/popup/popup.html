@@ -16,8 +16,8 @@
       <p class="meta">
         <span id="extractor"></span>
         <span id="progress"></span>
-        <span id="provider"></span>
       </p>
+      <p class="meta"><span id="provider"></span></p>
     </section>
 
     <div id="error" class="error" role="alert" hidden>
@@ -30,6 +30,13 @@
       <button id="read-chapter" class="primary" type="button">Read chapter</button>
       <button id="read" type="button">Read selection</button>
     </div>
+
+    <label class="voice" for="voice">
+      <span>Voice</span>
+      <select id="voice" disabled>
+        <option>Loading…</option>
+      </select>
+    </label>
 
     <div class="controls">
       <button id="previous" type="button" title="Previous chunk" aria-label="Previous chunk" disabled>⏮</button>

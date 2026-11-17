@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import {
   BackendError,
   BackendUnreachable,
+  CLIENT_TIMEOUT_MS,
   EmptyAudio,
   RequestTimeout,
   fetchSpeech,
+  fetchVoices,
   speechUrl,
   toErrorInfo,
 } from '../src/player/tts-client.js';
@@ -124,13 +126,99 @@ test('caller abort is passed through as AbortError, not mapped to a TTS error', 
 });
 
 test('toErrorInfo produces plain JSON-safe objects', () => {
-  const info = toErrorInfo(new BackendError(BASE, 503, 'QUOTA', 'quota'));
+  const info = toErrorInfo(new BackendError(BASE, 503, 'QUOTA', 'quota', 'azure'));
   assert.deepEqual(JSON.parse(JSON.stringify(info)), {
     kind: 'BackendError',
     message: 'quota',
     url: BASE,
     status: 503,
     reason: 'QUOTA',
+    provider: 'azure',
   });
   assert.equal(toErrorInfo(new Error('boom')).kind, 'PlaybackError');
+});
+
+// ---------- step 4: provider/voice ----------
+
+function audioResponse(headers) {
+  return new Response(new Uint8Array([0x49, 0x44, 0x33]), { status: 200, headers: { 'Content-Type': 'audio/mpeg', ...headers } });
+}
+
+test('client timeout stays above the backend Kokoro timeout (30 s)', () => {
+  assert.equal(CLIENT_TIMEOUT_MS, 45_000);
+});
+
+test('sends provider and voice, parses X-TTS-Provider/Voice/Fallback', async () => {
+  let sent;
+  const fetchImpl = async (_url, init) => {
+    sent = JSON.parse(init.body);
+    return audioResponse({ 'X-TTS-Provider': 'azure', 'X-TTS-Voice': 'en-US-BrianNeural', 'X-TTS-Fallback': 'true' });
+  };
+  const result = await fetchSpeech('Hi', { baseUrl: BASE, fetchImpl, provider: 'kokoro', voice: 'bm_george' });
+  assert.deepEqual(sent, { text: 'Hi', provider: 'kokoro', voice: 'bm_george' });
+  assert.equal(result.provider, 'azure');
+  assert.equal(result.voice, 'en-US-BrianNeural');
+  assert.equal(result.fallback, true);
+});
+
+test('without provider/voice only the text is sent (backend default)', async () => {
+  let sent;
+  const fetchImpl = async (_url, init) => {
+    sent = JSON.parse(init.body);
+    return audioResponse({ 'X-TTS-Provider': 'kokoro', 'X-TTS-Voice': 'af_heart', 'X-TTS-Fallback': 'false' });
+  };
+  const result = await fetchSpeech('Hi', { baseUrl: BASE, fetchImpl });
+  assert.deepEqual(sent, { text: 'Hi' });
+  assert.equal(result.voice, 'af_heart');
+  assert.equal(result.fallback, false);
+});
+
+test('older backends without the new headers still work', async () => {
+  const result = await fetchSpeech('Hi', { baseUrl: BASE, fetchImpl: async () => audioResponse({ 'X-TTS-Provider': 'azure' }) });
+  assert.equal(result.voice, null);
+  assert.equal(result.fallback, false);
+});
+
+test('error info carries the provider from the error body', async () => {
+  const fetchImpl = async () =>
+    jsonResponse(503, { error: 'UNAVAILABLE', message: 'Kokoro server not reachable at http://localhost:8880. Is it running?', provider: 'kokoro' });
+  const err = await fetchSpeech('Hi', { baseUrl: BASE, fetchImpl }).catch((e) => e);
+  assert.equal(err.provider, 'kokoro');
+  assert.equal(toErrorInfo(err).provider, 'kokoro');
+  assert.equal(describeError(toErrorInfo(err)), 'Kokoro is not running. Start the Kokoro server on localhost:8880.');
+});
+
+const CATALOG = {
+  defaultProvider: 'kokoro',
+  providers: [
+    { name: 'kokoro', displayName: 'Kokoro (local)', available: true, defaultVoice: 'af_heart', voices: [{ id: 'af_heart', label: 'Heart (US, female)', language: 'en-US', gender: 'female' }] },
+    { name: 'azure', displayName: 'Microsoft Azure', available: false, defaultVoice: 'en-US-BrianNeural', voices: [] },
+  ],
+};
+
+test('fetchVoices: GET /api/voices happy path', async () => {
+  let seen;
+  const fetchImpl = async (url, init) => {
+    seen = { url, method: init.method };
+    return jsonResponse(200, CATALOG);
+  };
+  const catalog = await fetchVoices(`${BASE}/`, { fetchImpl });
+  assert.deepEqual(seen, { url: `${BASE}/api/voices`, method: 'GET' });
+  assert.deepEqual(catalog, CATALOG);
+});
+
+test('fetchVoices: typed errors', async () => {
+  const down = await fetchVoices(BASE, { fetchImpl: async () => { throw new TypeError('Failed to fetch'); } }).catch((e) => e);
+  assert.ok(down instanceof BackendUnreachable);
+
+  const failing = await fetchVoices(BASE, { fetchImpl: async () => jsonResponse(500, { error: 'UPSTREAM_ERROR', message: 'x' }) }).catch((e) => e);
+  assert.ok(failing instanceof BackendError);
+  assert.equal(failing.status, 500);
+
+  const garbage = await fetchVoices(BASE, { fetchImpl: async () => new Response('<html>', { status: 200 }) }).catch((e) => e);
+  assert.ok(garbage instanceof BackendError);
+  assert.match(garbage.message, /invalid voice list/);
+
+  const slow = await fetchVoices(BASE, { fetchImpl: hangingFetch, timeoutMs: 20 }).catch((e) => e);
+  assert.ok(slow instanceof RequestTimeout);
 });

@@ -2,6 +2,9 @@
 
 import { describeError, errorDetail } from '../shared/error-messages.js';
 import { MessageType, PlayerCommand, Target, listen, toBackground } from '../shared/messages.js';
+import { getSettings, saveSettings } from '../shared/settings.js';
+import { fetchVoices, toErrorInfo } from '../player/tts-client.js';
+import { describeVoice, parseVoiceKey, renderVoiceOptions } from '../shared/voices.js';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -21,6 +24,7 @@ const els = {
   next: $('next'),
   stop: $('stop'),
   options: $('options'),
+  voice: $('voice'),
 };
 
 const STATUS_LABELS = {
@@ -40,6 +44,7 @@ const NOTICES = {
 };
 
 let current = null;
+let catalog = null; // GET /api/voices
 let activeTab = null;
 let originGranted = false;
 
@@ -65,7 +70,8 @@ function render(state, event) {
   const extractorId = state?.meta?.extractorId;
   els.extractor.textContent = hasSession && extractorId && extractorId !== 'selection' ? extractorId : '';
   els.progress.textContent = hasSession && state.total ? `${state.index + 1} / ${state.total}` : '';
-  els.provider.textContent = state?.provider ? `Voice: ${state.provider}` : '';
+  els.provider.textContent = hasSession ? describeVoice(state, catalog) : '';
+  els.provider.classList.toggle('fallback', Boolean(state?.fallback));
 
   const showError = status === 'error' && state.error;
   els.error.hidden = !showError;
@@ -137,6 +143,29 @@ els.previous.addEventListener('click', () => command(PlayerCommand.PREVIOUS));
 els.next.addEventListener('click', () => command(PlayerCommand.NEXT));
 els.stop.addEventListener('click', () => command(PlayerCommand.STOP));
 
+// Saving the voice is enough: the service worker sees the storage change and switches
+// the running player (the current chunk restarts in the new voice).
+els.voice.addEventListener('change', () => {
+  const selection = parseVoiceKey(els.voice.value);
+  if (!selection) return;
+  saveSettings(selection).catch((err) => showNotice(err.message));
+});
+
+async function loadVoices() {
+  const settings = await getSettings();
+  const selection = { provider: settings.provider, voice: settings.voice };
+  try {
+    catalog = await fetchVoices(settings.backendUrl);
+    renderVoiceOptions(els.voice, catalog, selection, { markDefault: false });
+    els.voice.disabled = false;
+    if (current) render(current); // labels for the "Voice:" line
+  } catch (err) {
+    renderVoiceOptions(els.voice, null, selection); // keep showing the stored choice
+    els.voice.disabled = true;
+    els.voice.title = describeError(toErrorInfo(err));
+  }
+}
+
 els.options.addEventListener('click', (e) => {
   e.preventDefault();
   chrome.runtime.openOptionsPage();
@@ -153,6 +182,8 @@ const activeTabReady = chrome.tabs.query({ active: true, currentWindow: true }).
   const pattern = originPattern(tab?.url);
   originGranted = pattern ? await chrome.permissions.contains({ origins: [pattern] }).catch(() => false) : false;
 });
+
+void loadVoices();
 
 command(PlayerCommand.GET_STATE).catch((err) => {
   console.error('[chapterly:popup]', err);

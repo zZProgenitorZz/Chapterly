@@ -37,15 +37,18 @@ export class FakeAudio extends EventTarget {
  */
 export function controllableFetch() {
   const requests = [];
-  const fetchSpeech = (text, { signal }) =>
+  const fetchSpeech = (text, { signal, provider: askedProvider, voice: askedVoice }) =>
     new Promise((resolve, reject) => {
       const req = {
         text,
         signal,
+        askedProvider,
+        askedVoice,
         settled: false,
-        resolve: (provider = 'azure') => {
+        // Answers like the backend: the requested voice, or a fallback when given.
+        resolve: (provider = askedProvider ?? 'azure', { voice = askedVoice ?? null, fallback = false } = {}) => {
           req.settled = true;
-          resolve({ blob: new Blob([`mp3:${text}`]), provider });
+          resolve({ blob: new Blob([`mp3:${text}`]), provider, voice, fallback });
         },
         reject: (err) => {
           req.settled = true;

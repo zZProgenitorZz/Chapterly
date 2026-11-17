@@ -70,9 +70,10 @@ export function toPlayerSession(session) {
 /**
  * Decides whether the offscreen player must be reloaded (it was closed, e.g. after a
  * long pause) and from where. Returns the PLAYER_LOAD payload, or null if the player
- * already has this session.
+ * already has this session. `voice` ({provider, voice}) is the current voice selection,
+ * so a recreated offscreen document keeps reading with the chosen voice.
  */
-export function buildRestorePayload(session, playerState, snapshot, backendUrl) {
+export function buildRestorePayload(session, playerState, snapshot, backendUrl, voice = null) {
   if (!session?.chunks?.length) return null;
   if (playerState?.sessionId === session.sessionId) return null;
   const startIndex = Math.min(Math.max(0, session.currentIndex ?? 0), session.chunks.length - 1);
@@ -81,6 +82,7 @@ export function buildRestorePayload(session, playerState, snapshot, backendUrl) 
   return {
     session: toPlayerSession(session),
     backendUrl,
+    voice,
     startIndex,
     startTime: samePlace ? snapshot.position ?? 0 : 0,
   };

@@ -6,6 +6,9 @@
 // Two audio elements alternate: while one plays chunk i, the other already holds
 // chunk i+1, so on "ended" the next chunk starts immediately.
 //
+// The voice selection ({provider, voice}) is passed to fetchSpeech with every request.
+// setVoice() drops the prefetched audio and restarts the current chunk in the new voice.
+//
 // Events (onEvent({type, data, state})):
 //   stateChanged, chunkStarted {index, paragraphIndexes}, buffering {index},
 //   sessionFinished {sessionId}, error {kind, message, chunkIndex, ...}
@@ -30,7 +33,7 @@ export class Player {
   #urls;
   #cacheOptions;
 
-  #slots; // [{el, index, provider}] x2
+  #slots; // [{el, index, provider, voice, fallback}] x2
   #active = 0;
 
   #session = null;
@@ -39,7 +42,10 @@ export class Player {
   #status = Status.IDLE;
   #waiting = Status.LOADING; // what PAUSED returns to if no audio is loaded yet
   #wantPlay = false;
-  #provider = null;
+  #selection = null; // {provider, voice} requested; null = backend default
+  #provider = null; // provider/voice/fallback of the chunk that is playing
+  #voice = null;
+  #fallback = false;
   #error = null;
   #finished = false;
   #startTime = 0;
@@ -48,7 +54,7 @@ export class Player {
 
   /**
    * @param {object} deps
-   * @param {Function} deps.fetchSpeech (text, {signal}) => Promise<{blob, provider}>
+   * @param {Function} deps.fetchSpeech (text, {signal, provider, voice}) => Promise<{blob, provider, voice, fallback}>
    * @param {HTMLAudioElement[]} [deps.audios] two audio elements (default: new Audio() x2)
    * @param {Function} [deps.onEvent]
    */
@@ -71,16 +77,18 @@ export class Player {
       el.preload = 'auto';
       el.addEventListener('ended', () => this.#onEnded(i));
       el.addEventListener('error', () => this.#onMediaError(i));
-      return { el, index: null, provider: null };
+      return { el, index: null, provider: null, voice: null, fallback: false };
     });
   }
 
   // ---------- public API ----------
 
-  load({ sessionId, title = '', chunks, startIndex = 0, startTime = 0, meta = null }) {
+  /** @param {{provider, voice}} [voice] voice selection; omitted = keep the current one */
+  load({ sessionId, title = '', chunks, startIndex = 0, startTime = 0, meta = null, voice }) {
     if (!Array.isArray(chunks) || chunks.length === 0) throw new Error('Session has no chunks');
     this.#resetAudio();
     this.#cache?.clear();
+    if (voice !== undefined) this.#selection = normalizeSelection(voice);
     this.#session = {
       sessionId,
       title,
@@ -92,7 +100,8 @@ export class Player {
       })),
     };
     this.#cache = new AudioCache({
-      fetchSpeech: this.#fetchSpeech,
+      // Read the selection at request time, so requests after setVoice() use the new voice.
+      fetchSpeech: (text, options) => this.#fetchSpeech(text, { ...options, ...(this.#selection ?? {}) }),
       texts: this.#session.chunks.map((c) => c.text),
       urls: this.#urls,
       ...this.#cacheOptions,
@@ -100,6 +109,8 @@ export class Player {
     this.#index = clamp(startIndex | 0, 0, chunks.length - 1);
     this.#startTime = Math.max(0, Number(startTime) || 0);
     this.#provider = null;
+    this.#voice = null;
+    this.#fallback = false;
     this.#error = null;
     this.#finished = false;
     this.#wantPlay = false;
@@ -198,6 +209,34 @@ export class Player {
     if (this.#index > 0) this.seekToChunk(this.#index - 1);
   }
 
+  get voiceSelection() {
+    return this.#selection;
+  }
+
+  /**
+   * Switches the voice ({provider, voice}). Prefetched chunks were made with the old
+   * voice, so they are dropped. If a chunk is playing or paused, the current chunk
+   * restarts from its beginning in the new voice and play/pause state is kept; the
+   * old audio is stopped first, so nothing overlaps.
+   */
+  setVoice(selection) {
+    const next = normalizeSelection(selection);
+    if (sameSelection(next, this.#selection)) return;
+    this.#selection = next;
+    if (!this.#session) return;
+
+    const active = this.#status !== Status.IDLE && this.#status !== Status.ERROR;
+    this.#resetAudio(); // stop old audio before its object URL is revoked
+    this.#cache.clear();
+    if (!active) {
+      this.#emit('stateChanged');
+      return;
+    }
+    this.#startTime = 0;
+    this.#wantPlay = this.#status !== Status.PAUSED;
+    void this.#startAt(this.#index);
+  }
+
   get playbackRate() {
     return this.#rate;
   }
@@ -224,7 +263,10 @@ export class Player {
       index: this.#index,
       total: this.#session?.chunks.length ?? 0,
       paragraphIndexes: chunk?.paragraphIndexes ?? [],
-      provider: this.#provider,
+      provider: this.#provider, // provider, voice and fallback of the chunk that is playing
+      voice: this.#voice,
+      fallback: this.#fallback,
+      selection: this.#selection, // the voice the user picked
       error: this.#error,
       position: slot.index === this.#index ? Number(slot.el.currentTime) || 0 : 0,
       playbackRate: this.#rate,
@@ -261,6 +303,8 @@ export class Player {
   #beginChunk(gen) {
     const slot = this.#slots[this.#active];
     this.#provider = slot.provider;
+    this.#voice = slot.voice;
+    this.#fallback = slot.fallback;
     if (this.#wantPlay) {
       this.#playElement(slot.el, gen); // first, to keep the gap minimal
       this.#setStatus(Status.PLAYING);
@@ -349,6 +393,8 @@ export class Player {
     const slot = this.#slots[slotIndex];
     slot.index = index;
     slot.provider = audio.provider;
+    slot.voice = audio.voice ?? null;
+    slot.fallback = Boolean(audio.fallback);
     slot.el.src = audio.url;
     slot.el.defaultPlaybackRate = this.#rate;
     slot.el.playbackRate = this.#rate;
@@ -400,9 +446,21 @@ export class Player {
 function clearSlot(slot) {
   slot.index = null;
   slot.provider = null;
+  slot.voice = null;
+  slot.fallback = false;
   slot.el.pause();
   slot.el.removeAttribute('src');
   slot.el.load?.();
+}
+
+/** {provider, voice} with both set, or null (= backend default). */
+function normalizeSelection(selection) {
+  if (!selection?.provider) return null;
+  return { provider: String(selection.provider), voice: selection.voice ? String(selection.voice) : undefined };
+}
+
+function sameSelection(a, b) {
+  return (a?.provider ?? null) === (b?.provider ?? null) && (a?.voice ?? null) === (b?.voice ?? null);
 }
 
 function clamp(n, lo, hi) {

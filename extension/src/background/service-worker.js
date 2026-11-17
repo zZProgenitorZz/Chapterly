@@ -5,7 +5,7 @@
 
 import { chunkParagraphs, splitIntoChunks } from '../shared/chunker.js';
 import { CONTENT_SCRIPT_FILES } from '../content/extractors/registry.js';
-import { getSettings } from '../shared/settings.js';
+import { VOICE_KEYS, getSettings, getVoiceSelection } from '../shared/settings.js';
 import {
   MessageType,
   PlayerCommand,
@@ -58,6 +58,17 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   run?.catch((err) => console.error('[chapterly] context menu', err));
 });
 
+// Voice picked in the popup or options page: apply it to the running player.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'sync' || !VOICE_KEYS.some((key) => key in changes)) return;
+  applyVoiceSelection().catch((err) => console.error('[chapterly] voice change', err));
+});
+
+async function applyVoiceSelection() {
+  if (!(await hasOffscreen())) return; // the next PLAYER_LOAD/restore reads it from settings
+  await toOffscreen(MessageType.PLAYER_SET_VOICE, await getVoiceSelection());
+}
+
 listen(Target.BACKGROUND, async ({ type, payload }) => {
   switch (type) {
     case MessageType.READ_SELECTION:
@@ -105,13 +116,13 @@ async function ensureOffscreen() {
 
 /** Recreated offscreen document = empty player: reload the session at currentIndex. */
 async function restoreSessionIfNeeded() {
-  const [state, session, snapshot, { backendUrl }] = await Promise.all([
+  const [state, session, snapshot, { backendUrl, provider, voice }] = await Promise.all([
     toOffscreen(MessageType.PLAYER_GET_STATE),
     getActiveSession(),
     getPlayerSnapshot(),
     getSettings(),
   ]);
-  const payload = buildRestorePayload(session, state, snapshot, backendUrl);
+  const payload = buildRestorePayload(session, state, snapshot, backendUrl, { provider, voice });
   if (payload) await toOffscreen(MessageType.PLAYER_LOAD, payload);
 }
 
@@ -120,8 +131,8 @@ async function restoreSessionIfNeeded() {
 async function startSession(session) {
   const saved = await saveActiveSession({ ...session, currentIndex: 0, createdAt: Date.now() });
   await ensureOffscreen();
-  const { backendUrl } = await getSettings();
-  await toOffscreen(MessageType.PLAYER_LOAD, { session: toPlayerSession(saved), backendUrl });
+  const { backendUrl, provider, voice } = await getSettings();
+  await toOffscreen(MessageType.PLAYER_LOAD, { session: toPlayerSession(saved), backendUrl, voice: { provider, voice } });
   await toOffscreen(MessageType.PLAYER_PLAY);
   try {
     await chrome.contextMenus.update(MENU_READ_FROM_HERE, { visible: session.kind === 'chapter' });

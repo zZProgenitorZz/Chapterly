@@ -233,3 +233,126 @@ test('load() can start mid-session at a saved position', async () => {
   assert.equal(player.getState().index, 3);
   assert.equal(audios.find((a) => !a.paused).currentTime, 12.5);
 });
+
+// ---------- voice selection (step 4) ----------
+
+const KOKORO = { provider: 'kokoro', voice: 'af_heart' };
+const AZURE = { provider: 'azure', voice: 'en-US-BrianNeural' };
+
+function setupWithVoice(selection, n = 5) {
+  const ctx = setup(n);
+  ctx.player.load({
+    sessionId: 'v1',
+    title: 'Voices',
+    chunks: Array.from({ length: n }, (_, i) => ({ index: i, text: `chunk ${i}`, paragraphIndexes: [i] })),
+    voice: selection,
+  });
+  return ctx;
+}
+
+test('requests carry the voice selection; state reports voice and fallback', async () => {
+  const { player, net } = setupWithVoice(KOKORO);
+  player.play();
+  await flush();
+  assert.deepEqual(
+    net.pending().map((r) => [r.askedProvider, r.askedVoice]),
+    [
+      ['kokoro', 'af_heart'],
+      ['kokoro', 'af_heart'],
+    ],
+  );
+  // The backend fell back to Azure for chunk 0.
+  net.byText('chunk 0').resolve('azure', { voice: 'en-US-BrianNeural', fallback: true });
+  await flush();
+  const state = player.getState();
+  assert.equal(state.provider, 'azure');
+  assert.equal(state.voice, 'en-US-BrianNeural');
+  assert.equal(state.fallback, true);
+  assert.deepEqual(state.selection, KOKORO);
+});
+
+test('setVoice while playing: drops prefetched audio, restarts the current chunk in the new voice', async () => {
+  const { player, net, audios, urls, playing, resolveAll } = setupWithVoice(KOKORO);
+  player.play();
+  await resolveAll();
+  audios[0].finish(); // now on chunk 1, chunk 2 prefetched/in flight with Kokoro
+  await resolveAll();
+  assert.equal(player.getState().index, 1);
+  const kokoroUrls = new Set(urls.live);
+  assert.ok(kokoroUrls.size > 0);
+
+  player.setVoice(AZURE);
+  assert.equal(playing().length, 0, 'old audio stops immediately');
+  assert.ok([...kokoroUrls].every((u) => !urls.live.has(u)), 'old-voice audio is revoked');
+  assert.equal(player.getState().status, Status.LOADING);
+  assert.equal(player.getState().index, 1, 'same chunk');
+
+  await flush();
+  assert.deepEqual(
+    net.pending().map((r) => [r.text, r.askedProvider, r.askedVoice]),
+    [
+      ['chunk 1', 'azure', 'en-US-BrianNeural'],
+      ['chunk 2', 'azure', 'en-US-BrianNeural'],
+    ],
+  );
+  await resolveAll();
+  const state = player.getState();
+  assert.equal(state.status, Status.PLAYING);
+  assert.equal(state.index, 1);
+  assert.equal(state.voice, 'en-US-BrianNeural');
+  assert.equal(state.position, 0, 'chunk restarts from the beginning');
+  assert.equal(playing().length, 1, 'exactly one element plays');
+});
+
+test('setVoice while paused stays paused, with the new voice loaded', async () => {
+  const { player, net, playing, resolveAll } = setupWithVoice(KOKORO);
+  player.play();
+  await resolveAll();
+  player.pause();
+
+  player.setVoice(AZURE);
+  await flush();
+  assert.equal(net.byText('chunk 0').askedVoice, 'en-US-BrianNeural');
+  await resolveAll();
+  assert.equal(player.getState().status, Status.PAUSED);
+  assert.equal(playing().length, 0);
+
+  player.play();
+  assert.equal(player.getState().status, Status.PLAYING);
+  assert.equal(player.getState().voice, 'en-US-BrianNeural');
+});
+
+test('setVoice while loading: the late old-voice response is ignored', async () => {
+  const { player, net, playing } = setupWithVoice(KOKORO);
+  player.play();
+  await flush();
+  const oldRequest = net.byText('chunk 0');
+
+  player.setVoice(AZURE);
+  await flush();
+  assert.ok(oldRequest.aborted, 'old request aborted');
+  oldRequest.resolve('kokoro'); // arrives anyway
+  await flush();
+  assert.equal(playing().length, 0);
+
+  net.byText('chunk 0').resolve();
+  await flush();
+  assert.equal(player.getState().voice, 'en-US-BrianNeural');
+  assert.equal(playing().length, 1);
+});
+
+test('setVoice when idle only stores the selection; the same voice twice is a no-op', async () => {
+  const { player, net } = setupWithVoice(KOKORO);
+  player.setVoice(AZURE);
+  await flush();
+  assert.equal(net.requests.length, 0);
+  assert.equal(player.getState().status, Status.IDLE);
+  player.play();
+  await flush();
+  assert.equal(net.byText('chunk 0').askedProvider, 'azure');
+
+  const before = net.requests.length;
+  player.setVoice({ ...AZURE });
+  await flush();
+  assert.equal(net.requests.length, before, 'no restart for an unchanged voice');
+});

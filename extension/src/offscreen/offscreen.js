@@ -1,7 +1,8 @@
 // Offscreen document: owns the Player and fetches audio from the backend itself
 // (runtime messaging only carries JSON, so audio never travels through it).
 // Offscreen documents only get chrome.runtime: no chrome.storage. Settings arrive
-// with PLAYER_LOAD, and state goes back to the service worker as PLAYER_EVENT.
+// with PLAYER_LOAD (backend URL, voice) and PLAYER_SET_VOICE, and state goes back to
+// the service worker as PLAYER_EVENT.
 
 import { Player } from '../player/player.js';
 import { fetchSpeech } from '../player/tts-client.js';
@@ -12,6 +13,7 @@ let backendUrl = DEFAULTS.backendUrl;
 
 const player = new Player({
   audios: [document.getElementById('audio-a'), document.getElementById('audio-b')],
+  // The player adds {provider, voice} of the current selection to every request.
   fetchSpeech: (text, options) => fetchSpeech(text, { ...options, baseUrl: backendUrl }),
   onEvent: ({ type, data, state }) => {
     void broadcast(Target.BACKGROUND, MessageType.PLAYER_EVENT, { event: type, data: data ?? null, state });
@@ -24,9 +26,13 @@ listen(Target.OFFSCREEN, ({ type, payload }) => {
       if (payload.backendUrl) backendUrl = payload.backendUrl;
       player.load({
         ...payload.session,
+        voice: payload.voice ?? null,
         startIndex: payload.startIndex ?? 0,
         startTime: payload.startTime ?? 0,
       });
+      break;
+    case MessageType.PLAYER_SET_VOICE:
+      player.setVoice(payload); // restarts the current chunk if playing or paused
       break;
     case MessageType.PLAYER_PLAY:
       player.play(); // progress arrives as events

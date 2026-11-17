@@ -68,6 +68,13 @@ test('restore: nothing to do when the player already has the session', () => {
   assert.equal(buildRestorePayload(null, null, null, 'u'), null);
 });
 
+test('restore: the payload carries the voice selection', () => {
+  const voice = { provider: 'azure', voice: 'en-US-BrianNeural' };
+  const payload = buildRestorePayload({ ...session, currentIndex: 3 }, null, null, 'http://localhost:8080', voice);
+  assert.deepEqual(payload.voice, voice);
+  assert.equal(payload.startIndex, 3);
+});
+
 test('restore: currentIndex is clamped to the chunk range', () => {
   assert.equal(buildRestorePayload({ ...session, currentIndex: 99 }, null, null, 'u').startIndex, 9);
 });

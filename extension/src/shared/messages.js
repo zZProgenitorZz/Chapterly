@@ -18,7 +18,8 @@ export const MessageType = Object.freeze({
   PLAYER_EVENT: 'PLAYER_EVENT', // offscreen player event: {event, data, state}
 
   // -> offscreen
-  PLAYER_LOAD: 'PLAYER_LOAD', // {session, backendUrl, startIndex?, startTime?}
+  PLAYER_LOAD: 'PLAYER_LOAD', // {session, backendUrl, voice: {provider, voice}, startIndex?, startTime?}
+  PLAYER_SET_VOICE: 'PLAYER_SET_VOICE', // {provider, voice}
   PLAYER_PLAY: 'PLAYER_PLAY',
   PLAYER_PAUSE: 'PLAYER_PAUSE',
   PLAYER_RESUME: 'PLAYER_RESUME',

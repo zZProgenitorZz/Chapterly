@@ -1,6 +1,6 @@
 // Prefetching audio cache for one session. No chrome.* APIs.
 //
-// Map<index, entry> where each entry holds a Promise<{url, provider}> (url = object
+// Map<index, entry> where each entry holds a Promise<{url, provider, voice, fallback}> (url = object
 // URL of the MP3 blob). setCurrent(i) defines the window [i, i + prefetchAhead]:
 // those chunks are requested (closest first, at most maxInFlight at a time), the
 // finished chunk i-1 is kept, and everything else is aborted or revoked.
@@ -116,12 +116,12 @@ export class AudioCache {
     entry.state = 'loading';
     this.#inFlight++;
     try {
-      const { blob, provider } = await this.#fetchWithRetry(entry);
+      const { blob, provider, voice = null, fallback = false } = await this.#fetchWithRetry(entry);
       if (entry.dropped) return;
       entry.url = this.#urls.createObjectURL(blob);
       entry.provider = provider;
       entry.state = 'ready';
-      entry.resolve({ url: entry.url, provider });
+      entry.resolve({ url: entry.url, provider, voice, fallback });
     } catch (err) {
       if (entry.dropped) {
         entry.reject(err);
