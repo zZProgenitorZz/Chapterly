@@ -4,12 +4,12 @@ import { Player, Status } from '../src/player/player.js';
 import { BackendError } from '../src/player/tts-client.js';
 import { FakeAudio, controllableFetch, fakeUrls, flush } from './helpers/fakes.js';
 
-function setup(n = 5) {
+function setup(n = 5, playerOptions = {}) {
   const net = controllableFetch();
   const audios = [new FakeAudio(), new FakeAudio()];
   const urls = fakeUrls();
   const events = [];
-  const player = new Player({ fetchSpeech: net.fetchSpeech, audios, urls, retryDelayMs: 0, onEvent: (e) => events.push(e) });
+  const player = new Player({ fetchSpeech: net.fetchSpeech, audios, urls, retryDelayMs: 0, prefetchMaxChunks: 2, onEvent: (e) => events.push(e), ...playerOptions });
   const session = {
     sessionId: 's1',
     title: 'Chapter',
@@ -41,7 +41,9 @@ test('starts with chunk 0 and prefetches the next ones', async () => {
   const state = player.getState();
   assert.equal(state.status, Status.PLAYING);
   assert.equal(state.provider, 'azure');
-  assert.deepEqual(events.find((e) => e.type === 'chunkStarted').data, { index: 0, paragraphIndexes: [0, 1] });
+  const started = events.find((e) => e.type === 'chunkStarted').data;
+  assert.equal(started.index, 0);
+  assert.deepEqual(started.paragraphIndexes, [0, 1]);
 });
 
 test('gapless: the next chunk is preloaded and starts synchronously on "ended"', async () => {
@@ -355,4 +357,91 @@ test('setVoice when idle only stores the selection; the same voice twice is a no
   player.setVoice({ ...AZURE });
   await flush();
   assert.equal(net.requests.length, before, 'no restart for an unchanged voice');
+});
+
+// ---------- paragraph-aligned skipping ----------
+
+/** Chunks: p0 (1 part), p1 (3 parts), p2 (1), p3 (1). */
+function paragraphSession(player) {
+  const parts = [
+    [0, 0, 1],
+    [1, 0, 3],
+    [1, 1, 3],
+    [1, 2, 3],
+    [2, 0, 1],
+    [3, 0, 1],
+  ];
+  player.load({
+    sessionId: 'p',
+    chunks: parts.map(([p, part, n], i) => ({ index: i, text: `chunk ${i}`, paragraphIndexes: [p], paragraphIndex: p, part, parts: n })),
+  });
+}
+
+test('nextParagraph skips the remaining parts of the current paragraph', async () => {
+  const { player, resolveAll } = setup(1, { prefetchMaxChunks: 6 });
+  paragraphSession(player);
+  player.seekToChunk(1);
+  player.play();
+  await resolveAll();
+  assert.equal(player.getState().index, 1);
+  player.nextParagraph();
+  await resolveAll();
+  assert.equal(player.getState().index, 4);
+  assert.equal(player.getState().paragraphIndex, 2);
+  assert.equal(player.getState().status, Status.PLAYING);
+  player.nextParagraph();
+  player.nextParagraph(); // already in the last paragraph: no-op
+  await resolveAll();
+  assert.equal(player.getState().index, 5);
+});
+
+test('previousParagraph: to the start of the current paragraph first, then the previous one', async () => {
+  const { player, resolveAll } = setup(1, { prefetchMaxChunks: 6 });
+  paragraphSession(player);
+  player.seekToChunk(3); // p1, part 3/3
+  player.play();
+  await resolveAll();
+  player.previousParagraph();
+  await resolveAll();
+  assert.equal(player.getState().index, 1, 'start of p1');
+  player.previousParagraph();
+  await resolveAll();
+  assert.equal(player.getState().index, 0, 'p0');
+});
+
+test('a prefetched target plays immediately (no new request)', async () => {
+  const { player, net, playing, resolveAll } = setup(6, { prefetchMaxChunks: 6 });
+  player.play();
+  await resolveAll();
+  const requests = net.requests.length;
+  player.next();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(player.getState().index, 1);
+  assert.equal(player.getState().status, Status.PLAYING, 'playing within microtasks, no network wait');
+  assert.equal(playing().length, 1);
+  assert.equal(net.requests.length, requests, 'served from the cache');
+});
+
+test('five quick next() calls: lands on +5, exactly one element plays, no stale audio', async () => {
+  const { player, net, audios, playing, resolveAll, events } = setup(12, { prefetchMaxChunks: 6 });
+  player.play();
+  await flush();
+  net.byText('chunk 0').resolve();
+  await flush();
+  for (let i = 0; i < 5; i++) player.next(); // chunks 1..4 partly still in flight
+  await resolveAll();
+  await resolveAll();
+  const state = player.getState();
+  assert.equal(state.index, 5);
+  assert.equal(state.status, Status.PLAYING);
+  assert.deepEqual(playing().length, 1);
+  const active = playing()[0];
+  assert.match(active.src, /^blob:/);
+  // Only chunk 0 and the final target ever started; the skipped ones never played.
+  assert.deepEqual(
+    events.filter((e) => e.type === 'chunkStarted').map((e) => e.data.index),
+    [0, 5],
+  );
+  assert.ok(audios.every((a) => a === active || a.paused));
 });

@@ -9,7 +9,8 @@ const texts = (n) => Array.from({ length: n }, (_, i) => `chunk ${i}`);
 function setup(n = 10, opts = {}) {
   const net = controllableFetch();
   const urls = fakeUrls();
-  const cache = new AudioCache({ fetchSpeech: net.fetchSpeech, texts: texts(n), urls, retryDelayMs: 0, ...opts });
+  // prefetchMaxChunks: 2 keeps these tests on a small, fixed window; size-based tests below.
+  const cache = new AudioCache({ fetchSpeech: net.fetchSpeech, texts: texts(n), urls, retryDelayMs: 0, prefetchMaxChunks: 2, ...opts });
   return { cache, net, urls };
 }
 
@@ -128,4 +129,43 @@ test('clear() revokes every URL and aborts every request', async () => {
   await flush();
   assert.equal(urls.live.size, 0);
   assert.ok(net.requests.filter((r) => !r.settled).every((r) => r.aborted));
+});
+
+// ---------- size-based window (defaults: 1500 chars or 6 chunks past the current one) ----------
+
+function sized(lengths, opts = {}) {
+  const net = controllableFetch();
+  const cache = new AudioCache({ fetchSpeech: net.fetchSpeech, texts: lengths.map((n, i) => `${i}:`.padEnd(n, 'x')), urls: fakeUrls(), retryDelayMs: 0, ...opts });
+  return { cache, net };
+}
+
+test('window: short chunks -> 6 chunks ahead', () => {
+  const { cache } = sized(Array(20).fill(50));
+  cache.setCurrent(0);
+  assert.deepEqual(cache.indexes(), [0, 1, 2, 3, 4, 5, 6]);
+  assert.equal(cache.windowEnd(10), 16);
+});
+
+test('window: long chunks -> until at least 1500 characters are queued ahead', () => {
+  const { cache } = sized(Array(20).fill(600));
+  cache.setCurrent(0);
+  assert.deepEqual(cache.indexes(), [0, 1, 2, 3], '600+600 < 1500, +600 = 1800 >= 1500');
+});
+
+test('window: mixed lengths stop at whichever limit comes first, and at the end of the session', () => {
+  const { cache } = sized([10, 1400, 50, 50, 50, 50, 50, 50]);
+  assert.equal(cache.windowEnd(0), 3, '1400, +50 = 1450 < 1500, +50 = 1500 -> stop');
+  assert.equal(cache.windowEnd(5), 7, 'only 2 chunks left');
+  assert.equal(cache.windowEnd(7), 7);
+});
+
+test('window: still at most 2 requests in flight, closest first', async () => {
+  const { cache, net } = sized(Array(20).fill(50));
+  cache.setCurrent(0);
+  await flush();
+  assert.equal(net.pending().length, 2);
+  assert.deepEqual(
+    net.pending().map((r) => r.text.split(':')[0]),
+    ['0', '1'],
+  );
 });

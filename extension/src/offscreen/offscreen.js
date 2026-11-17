@@ -24,6 +24,7 @@ listen(Target.OFFSCREEN, ({ type, payload }) => {
   switch (type) {
     case MessageType.PLAYER_LOAD:
       if (payload.backendUrl) backendUrl = payload.backendUrl;
+      if (payload.playbackRate != null) player.playbackRate = payload.playbackRate;
       player.load({
         ...payload.session,
         voice: payload.voice ?? null,
@@ -54,6 +55,12 @@ listen(Target.OFFSCREEN, ({ type, payload }) => {
       break;
     case MessageType.PLAYER_PREVIOUS:
       player.previous();
+      break;
+    case MessageType.PLAYER_NEXT_PARAGRAPH:
+      player.nextParagraph();
+      break;
+    case MessageType.PLAYER_PREVIOUS_PARAGRAPH:
+      player.previousParagraph();
       break;
     case MessageType.PLAYER_SET_RATE:
       player.playbackRate = payload.rate;

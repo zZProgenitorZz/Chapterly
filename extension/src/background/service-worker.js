@@ -290,6 +290,15 @@ async function handleCommand({ command, index, rate }) {
       return toOffscreen(MessageType.PLAYER_NEXT);
     case PlayerCommand.PREVIOUS:
       return toOffscreen(MessageType.PLAYER_PREVIOUS);
+    case PlayerCommand.NEXT_PARAGRAPH:
+      return toOffscreen(MessageType.PLAYER_NEXT_PARAGRAPH);
+    case PlayerCommand.PREVIOUS_PARAGRAPH:
+      return toOffscreen(MessageType.PLAYER_PREVIOUS_PARAGRAPH);
+    case PlayerCommand.TOGGLE: {
+      const state = await toOffscreen(MessageType.PLAYER_GET_STATE);
+      if (['playing', 'loading', 'buffering'].includes(state?.status)) return toOffscreen(MessageType.PLAYER_PAUSE);
+      return toOffscreen(state?.status === 'paused' ? MessageType.PLAYER_RESUME : MessageType.PLAYER_PLAY);
+    }
     case PlayerCommand.SEEK:
       return toOffscreen(MessageType.PLAYER_SEEK, { index });
     case PlayerCommand.SET_RATE:

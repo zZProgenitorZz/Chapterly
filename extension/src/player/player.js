@@ -13,8 +13,9 @@
 //   stateChanged, chunkStarted {index, paragraphIndexes}, buffering {index},
 //   sessionFinished {sessionId}, error {kind, message, chunkIndex, ...}
 
-import { AudioCache } from './audio-cache.js';
+import { AudioCache, DEFAULT_PREFETCH } from './audio-cache.js';
 import { toErrorInfo } from './tts-client.js';
+import { nextParagraphChunk, paragraphStartChunk } from '../shared/chunker.js';
 
 export const Status = Object.freeze({
   IDLE: 'idle',
@@ -63,7 +64,8 @@ export class Player {
     audios,
     onEvent = () => {},
     urls = URL,
-    prefetchAhead = 2,
+    prefetchChars = DEFAULT_PREFETCH.prefetchChars,
+    prefetchMaxChunks = DEFAULT_PREFETCH.prefetchMaxChunks,
     maxInFlight = 2,
     retryDelayMs = 1000,
   }) {
@@ -71,10 +73,11 @@ export class Player {
     this.#fetchSpeech = fetchSpeech;
     this.#onEvent = onEvent;
     this.#urls = urls;
-    this.#cacheOptions = { prefetchAhead, maxInFlight, retryDelayMs };
+    this.#cacheOptions = { prefetchChars, prefetchMaxChunks, maxInFlight, retryDelayMs };
     const els = audios ?? [new Audio(), new Audio()];
     this.#slots = els.slice(0, 2).map((el, i) => {
       el.preload = 'auto';
+      el.preservesPitch = true; // speed changes must not sound like chipmunks
       el.addEventListener('ended', () => this.#onEnded(i));
       el.addEventListener('error', () => this.#onMediaError(i));
       return { el, index: null, provider: null, voice: null, fallback: false };
@@ -93,11 +96,19 @@ export class Player {
       sessionId,
       title,
       meta,
-      chunks: chunks.map((c, i) => ({
-        index: c.index ?? i,
-        text: String(c.text),
-        paragraphIndexes: Array.isArray(c.paragraphIndexes) ? c.paragraphIndexes : [],
-      })),
+      chunks: chunks.map((c, i) => {
+        const paragraphIndexes = Array.isArray(c.paragraphIndexes) ? c.paragraphIndexes : [];
+        return {
+          index: c.index ?? i,
+          text: String(c.text),
+          paragraphIndexes,
+          paragraphIndex: c.paragraphIndex ?? paragraphIndexes[0] ?? i,
+          part: c.part ?? 0,
+          parts: c.parts ?? 1,
+          startOffset: c.startOffset ?? null,
+          endOffset: c.endOffset ?? null,
+        };
+      }),
     };
     this.#cache = new AudioCache({
       // Read the selection at request time, so requests after setVoice() use the new voice.
@@ -209,6 +220,33 @@ export class Player {
     if (this.#index > 0) this.seekToChunk(this.#index - 1);
   }
 
+  /** First chunk of the next paragraph, even if the current paragraph has more parts. */
+  nextParagraph() {
+    if (!this.#session) return;
+    const target = nextParagraphChunk(this.#session.chunks, this.#index);
+    if (target >= 0) this.seekToChunk(target);
+  }
+
+  /**
+   * First chunk of the previous paragraph. Like previous(): if we are already into the
+   * current paragraph (past its first part, or more than 3 s in), go to its start instead.
+   */
+  previousParagraph() {
+    if (!this.#session) return;
+    const chunks = this.#session.chunks;
+    const start = paragraphStartChunk(chunks, this.#index);
+    const slot = this.#slots[this.#active];
+    const intoParagraph = this.#index > start || (slot.index === this.#index && slot.el.currentTime > RESTART_THRESHOLD_S);
+    if (intoParagraph) {
+      this.seekToChunk(start);
+    } else if (start > 0) {
+      this.seekToChunk(paragraphStartChunk(chunks, start - 1));
+    } else if (slot.index === this.#index) {
+      slot.el.currentTime = 0;
+      this.#emit('stateChanged');
+    }
+  }
+
   get voiceSelection() {
     return this.#selection;
   }
@@ -270,6 +308,8 @@ export class Player {
       error: this.#error,
       position: slot.index === this.#index ? Number(slot.el.currentTime) || 0 : 0,
       playbackRate: this.#rate,
+      paragraphIndex: chunk?.paragraphIndex ?? null,
+      finished: this.#finished, // the session played to its end
     };
   }
 
@@ -308,8 +348,8 @@ export class Player {
     if (this.#wantPlay) {
       this.#playElement(slot.el, gen); // first, to keep the gap minimal
       this.#setStatus(Status.PLAYING);
-      const { index, paragraphIndexes } = this.#session.chunks[this.#index];
-      this.#emit('chunkStarted', { index, paragraphIndexes });
+      const { index, paragraphIndexes, paragraphIndex, part, parts, startOffset, endOffset } = this.#session.chunks[this.#index];
+      this.#emit('chunkStarted', { index, paragraphIndexes, paragraphIndex, part, parts, startOffset, endOffset });
     } else {
       this.#setStatus(Status.PAUSED);
     }

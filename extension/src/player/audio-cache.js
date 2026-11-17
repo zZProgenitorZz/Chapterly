@@ -1,16 +1,20 @@
 // Prefetching audio cache for one session. No chrome.* APIs.
 //
 // Map<index, entry> where each entry holds a Promise<{url, provider, voice, fallback}> (url = object
-// URL of the MP3 blob). setCurrent(i) defines the window [i, i + prefetchAhead]:
-// those chunks are requested (closest first, at most maxInFlight at a time), the
-// finished chunk i-1 is kept, and everything else is aborted or revoked.
-// A failed request is retried once after retryDelayMs.
+// URL of the MP3 blob). setCurrent(i) defines the window: chunk i plus the chunks after
+// it until at least prefetchChars characters or prefetchMaxChunks chunks are queued
+// past i, whichever comes first. Those are requested (closest first, at most
+// maxInFlight at a time), the finished chunk i-1 is kept, and everything else is
+// aborted or revoked. A failed request is retried once after retryDelayMs.
+
+export const DEFAULT_PREFETCH = Object.freeze({ prefetchChars: 1500, prefetchMaxChunks: 6 });
 
 export class AudioCache {
   #fetchSpeech;
   #texts;
   #urls;
-  #prefetchAhead;
+  #prefetchChars;
+  #prefetchMaxChunks;
   #maxInFlight;
   #retryDelayMs;
 
@@ -23,10 +27,19 @@ export class AudioCache {
    * @param {(text: string, o: {signal: AbortSignal}) => Promise<{blob: Blob, provider: string}>} opts.fetchSpeech
    * @param {string[]} opts.texts chunk texts by index
    */
-  constructor({ fetchSpeech, texts, prefetchAhead = 2, maxInFlight = 2, retryDelayMs = 1000, urls = URL }) {
+  constructor({
+    fetchSpeech,
+    texts,
+    prefetchChars = DEFAULT_PREFETCH.prefetchChars,
+    prefetchMaxChunks = DEFAULT_PREFETCH.prefetchMaxChunks,
+    maxInFlight = 2,
+    retryDelayMs = 1000,
+    urls = URL,
+  }) {
     this.#fetchSpeech = fetchSpeech;
     this.#texts = texts;
-    this.#prefetchAhead = prefetchAhead;
+    this.#prefetchChars = prefetchChars;
+    this.#prefetchMaxChunks = prefetchMaxChunks;
     this.#maxInFlight = Math.max(1, maxInFlight);
     this.#retryDelayMs = retryDelayMs;
     this.#urls = urls;
@@ -62,7 +75,7 @@ export class AudioCache {
   /** Moves the window to `index`: prefetches ahead, drops what is no longer needed. */
   setCurrent(index) {
     this.#current = index;
-    const last = Math.min(index + this.#prefetchAhead, this.#texts.length - 1);
+    const last = this.windowEnd(index);
     for (const entry of [...this.#entries.values()]) {
       const inWindow = entry.index >= index && entry.index <= last;
       const justFinished = entry.index === index - 1 && entry.state === 'ready';
@@ -75,6 +88,19 @@ export class AudioCache {
       if (!this.#entries.has(i)) this.#create(i);
     }
     this.#pump();
+  }
+
+  /** Last chunk index of the prefetch window that starts at `index`. */
+  windowEnd(index) {
+    let last = index;
+    let chars = 0;
+    let ahead = 0;
+    while (last + 1 < this.#texts.length && ahead < this.#prefetchMaxChunks && chars < this.#prefetchChars) {
+      last++;
+      ahead++;
+      chars += this.#texts[last].length;
+    }
+    return last;
   }
 
   /** Aborts everything and revokes every object URL. */

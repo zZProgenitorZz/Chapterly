@@ -13,12 +13,18 @@ export const Target = Object.freeze({
 export const MessageType = Object.freeze({
   // -> background
   READ_SELECTION: 'READ_SELECTION', // popup asks to read the selection in a tab: {tabId}
-  READ_CHAPTER: 'READ_CHAPTER', // popup asks to extract and read the chapter in a tab: {tabId}
+  // popup asks to extract and read the chapter in a tab:
+  // {tabId, start?: 'ask' | 'top' | 'resume', paragraphIndex?}
+  READ_CHAPTER: 'READ_CHAPTER',
+  NEXT_CHAPTER: 'NEXT_CHAPTER', // popup "Next chapter" button (auto-next off)
   PLAYER_COMMAND: 'PLAYER_COMMAND', // popup command: {command: PlayerCommand, index?, rate?}
   PLAYER_EVENT: 'PLAYER_EVENT', // offscreen player event: {event, data, state}
+  PAGE_COMMAND: 'PAGE_COMMAND', // page keyboard shortcut: {url, command: 'next' | 'previous' | 'toggle'}
+  PAGE_SEEK: 'PAGE_SEEK', // page click: {url, paragraphIndex, offset}
 
   // -> offscreen
-  PLAYER_LOAD: 'PLAYER_LOAD', // {session, backendUrl, voice: {provider, voice}, startIndex?, startTime?}
+  // {session, backendUrl, voice: {provider, voice}, playbackRate, startIndex?, startTime?}
+  PLAYER_LOAD: 'PLAYER_LOAD',
   PLAYER_SET_VOICE: 'PLAYER_SET_VOICE', // {provider, voice}
   PLAYER_PLAY: 'PLAYER_PLAY',
   PLAYER_PAUSE: 'PLAYER_PAUSE',
@@ -27,25 +33,31 @@ export const MessageType = Object.freeze({
   PLAYER_SEEK: 'PLAYER_SEEK', // {index}
   PLAYER_NEXT: 'PLAYER_NEXT',
   PLAYER_PREVIOUS: 'PLAYER_PREVIOUS',
+  PLAYER_NEXT_PARAGRAPH: 'PLAYER_NEXT_PARAGRAPH',
+  PLAYER_PREVIOUS_PARAGRAPH: 'PLAYER_PREVIOUS_PARAGRAPH',
   PLAYER_SET_RATE: 'PLAYER_SET_RATE', // {rate}
   PLAYER_GET_STATE: 'PLAYER_GET_STATE',
 
   // -> popup
   PLAYER_STATE: 'PLAYER_STATE', // {state, event}
 
-  // -> content (strings duplicated in src/content/highlight.js)
-  HIGHLIGHT: 'HIGHLIGHT', // {url, paragraphIndexes}
+  // -> content (strings duplicated in src/content/highlight.js and page-controls.js)
+  HIGHLIGHT: 'HIGHLIGHT', // {url, paragraphIndexes, paragraphIndex, parts, startOffset, endOffset}
   CLEAR_HIGHLIGHT: 'CLEAR_HIGHLIGHT', // {url}
   GET_CONTEXT_PARAGRAPH: 'GET_CONTEXT_PARAGRAPH', // {url} -> {paragraphIndex}
+  PAGE_SESSION: 'PAGE_SESSION', // {url, active}: enables keyboard/click control on that page
 });
 
 export const PlayerCommand = Object.freeze({
   PLAY: 'play',
   PAUSE: 'pause',
   RESUME: 'resume',
+  TOGGLE: 'toggle', // pause if playing, else play/resume (shortcuts)
   STOP: 'stop',
   NEXT: 'next',
   PREVIOUS: 'previous',
+  NEXT_PARAGRAPH: 'nextParagraph',
+  PREVIOUS_PARAGRAPH: 'previousParagraph',
   SEEK: 'seek', // {index}
   SET_RATE: 'setRate', // {rate}
   GET_STATE: 'getState',

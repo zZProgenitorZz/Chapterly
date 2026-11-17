@@ -1,11 +1,20 @@
 // Turns paragraphs into TTS chunks. Pure functions, no chrome.* APIs.
+//
+// Rules (paragraph-aligned, so "next" lands on the next paragraph):
+// - every chunk belongs to exactly one paragraph; paragraphs are never merged;
+// - a paragraph longer than maxChars is split on sentence boundaries into parts;
+// - the very first chunk is at most firstChunkMaxChars, so audio starts fast.
+//
+// Chunk: {index, text, paragraphIndexes: [p], paragraphIndex: p, part, parts,
+//         startOffset, endOffset}
+// where the offsets are character offsets of the piece inside the normalised
+// paragraph text (whitespace collapsed to single spaces, trimmed).
 
 /** Hard limit of the backend (TtsController.MAX_CHARS). */
 export const BACKEND_MAX_CHARS = 3000;
 
 export const DEFAULT_CHUNK_OPTIONS = Object.freeze({
-  minChars: 200, // merge short consecutive paragraphs (dialogue) until a chunk has this many chars
-  maxChars: 1200, // split longer paragraphs on sentence boundaries
+  maxChars: 600, // split longer paragraphs on sentence boundaries
   firstChunkMaxChars: 400, // small first chunk = fast start
 });
 
@@ -13,61 +22,56 @@ export const DEFAULT_CHUNK_OPTIONS = Object.freeze({
 const SENTENCE_END = /(?<=[.!?…]+["'”’»)\]]*)\s+/u;
 const SPEAKABLE = /[\p{L}\p{N}]/u;
 
+/** The normalisation the offsets refer to (the extractor already produces this form). */
+export function normalizeParagraphText(text) {
+  return String(text ?? '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 /**
  * @param {{index: number, text: string}[]} paragraphs
- * @returns {{index: number, text: string, paragraphIndexes: number[]}[]}
+ * @returns {{index, text, paragraphIndexes, paragraphIndex, part, parts, startOffset, endOffset}[]}
  */
 export function chunkParagraphs(paragraphs, options = {}) {
-  const { minChars, maxChars, firstChunkMaxChars } = { ...DEFAULT_CHUNK_OPTIONS, ...options };
+  const { maxChars, firstChunkMaxChars } = { ...DEFAULT_CHUNK_OPTIONS, ...options };
   if (maxChars > BACKEND_MAX_CHARS) throw new RangeError(`maxChars must be <= ${BACKEND_MAX_CHARS}`);
   const firstMax = Math.min(firstChunkMaxChars, maxChars);
 
-  // Units: paragraphs (or sentence-packed pieces of long ones), each <= maxChars.
-  const units = [];
+  const chunks = [];
   for (const [i, p] of (paragraphs ?? []).entries()) {
-    const text = String(p?.text ?? '').replace(/\s+/g, ' ').trim();
+    const text = normalizeParagraphText(p?.text);
     if (!SPEAKABLE.test(text)) continue;
     const paragraphIndex = p.index ?? i;
-    for (const piece of text.length > maxChars ? splitLongText(text, maxChars) : [text]) {
-      units.push({ text: piece, paragraphIndex });
-    }
-  }
 
-  const chunks = [];
-  let current = null;
-  const close = () => {
-    if (!current) return;
-    chunks.push({ index: chunks.length, text: current.text, paragraphIndexes: current.paragraphIndexes });
-    current = null;
-  };
-
-  while (units.length > 0) {
-    const unit = units.shift();
-    const limit = chunks.length === 0 ? firstMax : maxChars;
-
-    if (!current) {
-      if (unit.text.length > limit) {
-        // Only possible for the first chunk: take a short head, requeue the rest.
-        const [head, ...rest] = splitLongText(unit.text, limit);
-        current = { text: head, paragraphIndexes: [unit.paragraphIndex] };
-        close();
-        if (rest.length) units.unshift({ text: rest.join(' '), paragraphIndex: unit.paragraphIndex });
-        continue;
-      }
-      current = { text: unit.text, paragraphIndexes: [unit.paragraphIndex] };
-      continue;
-    }
-
-    const merged = `${current.text}\n${unit.text}`;
-    if (current.text.length < minChars && merged.length <= limit) {
-      current.text = merged;
-      if (current.paragraphIndexes.at(-1) !== unit.paragraphIndex) current.paragraphIndexes.push(unit.paragraphIndex);
+    let pieces;
+    if (chunks.length === 0 && text.length > firstMax) {
+      // Fast start: a short head, then the rest with the normal limit.
+      const head = splitLongText(text, firstMax)[0];
+      const rest = text.slice(text.indexOf(head) + head.length).trim();
+      pieces = [head, ...(rest ? splitLongText(rest, maxChars) : [])];
     } else {
-      close();
-      units.unshift(unit);
+      pieces = text.length > maxChars ? splitLongText(text, maxChars) : [text];
+    }
+
+    let cursor = 0;
+    for (const [part, piece] of pieces.entries()) {
+      // Pieces are exact substrings of the normalised text, in order.
+      const startOffset = text.indexOf(piece, cursor);
+      const endOffset = startOffset + piece.length;
+      cursor = endOffset;
+      chunks.push({
+        index: chunks.length,
+        text: piece,
+        paragraphIndexes: [paragraphIndex],
+        paragraphIndex,
+        part,
+        parts: pieces.length,
+        startOffset,
+        endOffset,
+      });
     }
   }
-  close();
   return chunks;
 }
 
@@ -77,12 +81,12 @@ export function textToParagraphs(text) {
   return text
     .replace(/\r\n?/g, '\n')
     .split(/\n+/)
-    .map((p) => p.replace(/\s+/g, ' ').trim())
+    .map(normalizeParagraphText)
     .filter((p) => SPEAKABLE.test(p))
     .map((p, index) => ({ index, text: p }));
 }
 
-/** Selection (step 2 API): text -> chunks. */
+/** Selection: text -> paragraphs -> chunks (same rules as chapters). */
 export function splitIntoChunks(text, options) {
   return chunkParagraphs(textToParagraphs(text), options);
 }
@@ -124,4 +128,45 @@ function splitOnSpaces(text, maxChars) {
   }
   if (rest) out.push(rest);
   return out;
+}
+
+// ---------- lookups (used for click-to-jump, remembered positions, paragraph skips) ----------
+
+const paragraphOf = (chunk) => chunk.paragraphIndex ?? chunk.paragraphIndexes?.[0] ?? chunk.index;
+
+/** First chunk of the paragraph, or of the next paragraph that has chunks; -1 if none. */
+export function chunkIndexForParagraph(chunks, paragraphIndex) {
+  return chunks.findIndex((c) => paragraphOf(c) >= paragraphIndex);
+}
+
+/**
+ * The chunk that contains character `offset` of paragraph `paragraphIndex`.
+ * An offset between two parts (the space between sentences) picks the next part;
+ * offset null/undefined picks the paragraph's first chunk.
+ */
+export function chunkIndexForPosition(chunks, paragraphIndex, offset) {
+  const first = chunkIndexForParagraph(chunks, paragraphIndex);
+  if (first < 0) return chunks.length ? chunks.length - 1 : -1;
+  if (paragraphOf(chunks[first]) !== paragraphIndex || offset == null || !Number.isFinite(offset)) return first;
+  // Parts are in order: the first part that ends after the offset contains it
+  // (or follows the gap the offset is in).
+  let i = first;
+  for (; i < chunks.length && paragraphOf(chunks[i]) === paragraphIndex; i++) {
+    if (offset < (chunks[i].endOffset ?? Infinity)) return i;
+  }
+  return i - 1; // past the end: the paragraph's last part
+}
+
+/** Index of the first chunk of the next paragraph after chunk `index`, or -1. */
+export function nextParagraphChunk(chunks, index) {
+  const p = paragraphOf(chunks[index]);
+  return chunks.findIndex((c, i) => i > index && paragraphOf(c) !== p);
+}
+
+/** Index of the first chunk of the paragraph containing chunk `index`. */
+export function paragraphStartChunk(chunks, index) {
+  const p = paragraphOf(chunks[index]);
+  let i = index;
+  while (i > 0 && paragraphOf(chunks[i - 1]) === p) i--;
+  return i;
 }
