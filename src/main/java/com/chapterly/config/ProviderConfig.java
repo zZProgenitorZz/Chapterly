@@ -33,6 +33,6 @@ public class ProviderConfig {
                 })
                 .toList();
 
-        return new TtsService(ordered);
+        return new TtsService(ordered, props.fallback());
     }
 }

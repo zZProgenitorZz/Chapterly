@@ -5,18 +5,54 @@ spring:
   application:
     name: chapterly
   config:
-    # Optional local overrides (gitignored). See application.yml.example.
-    import: optional:file:./application-local.yml
+    # Optional local files, both gitignored. Paths are relative to the working
+    # directory, so start the app from the repo root.
+    # - ./.env: KEY=value lines (AZURE_SPEECH_KEY, AZURE_SPEECH_REGION, KOKORO_BASE_URL),
+    #   read as a properties file. Real environment variables still win.
+    # - ./application-local.yml: overrides for anything below (see application.yml.example).
+    # chapterly.env-file can point elsewhere (used by tests).
+    import: optional:file:${chapterly.env-file:./.env}[.properties], optional:file:./application-local.yml
 
 chapterly:
-  # Providers are tried in this order. Add "kokoro" here once it exists.
+  # Providers in fallback order. The first available one is the default.
   providers:
+    - kokoro
     - azure
+  # Try the other providers when the requested one is down, times out or is out of quota.
+  fallback: true
+  kokoro:
+    base-url: ${KOKORO_BASE_URL:http://localhost:8880}
+    default-voice: af_heart
+    model: kokoro
+    timeout: 30s
+    # Offered when the Kokoro server's voice list can't be fetched.
+    fallback-voices:
+      - af_heart
+      - af_bella
+      - af_nicole
+      - af_sarah
+      - am_michael
+      - am_adam
+      - am_fenrir
+      - bf_emma
+      - bf_isabella
+      - bm_george
+      - bm_fable
+      - bm_lewis
   azure:
     key: ${AZURE_SPEECH_KEY:}
     region: ${AZURE_SPEECH_REGION:}
     voice: en-US-BrianNeural
     timeout: 8s
+    voices:
+      - en-US-BrianNeural
+      - en-US-AndrewNeural
+      - en-US-GuyNeural
+      - en-US-AvaNeural
+      - en-US-EmmaNeural
+      - en-US-JennyNeural
+      - en-GB-RyanNeural
+      - en-GB-SoniaNeural
   cors:
     allowed-origin-patterns:
       - chrome-extension://*

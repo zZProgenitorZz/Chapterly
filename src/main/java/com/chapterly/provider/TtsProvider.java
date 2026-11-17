@@ -2,18 +2,39 @@ package com.chapterly.provider;
 
 import com.chapterly.error.TtsException;
 
+import java.util.List;
+
 /**
  * A text-to-speech backend.
  *
  * <p>Contract: {@link #synthesize} must return MP3 audio (audio/mpeg), so callers never
  * need to know which provider produced it. Failures must be reported as a
- * {@link TtsException} with the right reason; QUOTA and TIMEOUT let the service fall back
- * to the next provider.
+ * {@link TtsException} with the right reason; QUOTA, TIMEOUT and UNAVAILABLE let the
+ * service fall back to another provider.
  */
 public interface TtsProvider {
 
-    /** Short, stable id used in {@code chapterly.providers} and the X-TTS-Provider header. */
+    /** Short, stable id used in config ({@code chapterly.providers}), requests and the X-TTS-Provider header. */
     String name();
 
-    byte[] synthesize(String text) throws TtsException;
+    /** Name shown to users, e.g. "Kokoro (local)". */
+    String displayName();
+
+    /**
+     * Whether the provider is configured and may be offered. A configured provider can
+     * still fail at runtime (e.g. a local server that is down); that is a TtsException.
+     */
+    boolean isAvailable();
+
+    /** Voice used when a request names none, and when this provider serves as a fallback. */
+    String defaultVoice();
+
+    /** Voices to offer. May call the provider, but must not throw: return a fallback list instead. */
+    List<Voice> voices();
+
+    /**
+     * @param voice voice id from {@link #voices()}, or null for {@link #defaultVoice()}
+     * @throws TtsException BAD_INPUT for a voice this provider does not offer
+     */
+    byte[] synthesize(String text, String voice) throws TtsException;
 }

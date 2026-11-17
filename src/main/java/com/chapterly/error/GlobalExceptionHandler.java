@@ -16,28 +16,28 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorResponse> handleTts(TtsException e) {
         HttpStatus status = switch (e.getReason()) {
             case BAD_INPUT -> HttpStatus.BAD_REQUEST;
-            case QUOTA -> HttpStatus.SERVICE_UNAVAILABLE;
+            case QUOTA, UNAVAILABLE -> HttpStatus.SERVICE_UNAVAILABLE;
             case TIMEOUT -> HttpStatus.GATEWAY_TIMEOUT;
             case UPSTREAM_ERROR -> HttpStatus.BAD_GATEWAY;
         };
-        return body(status, e.getReason().name(), e.getMessage());
+        return body(status, new ErrorResponse(e.getReason().name(), e.getMessage(), e.getProvider()));
     }
 
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public ResponseEntity<ErrorResponse> handleUnreadable(HttpMessageNotReadableException e) {
-        return body(HttpStatus.BAD_REQUEST, TtsException.Reason.BAD_INPUT.name(),
-                "Request body must be JSON like {\"text\": \"...\"}");
+        return body(HttpStatus.BAD_REQUEST, new ErrorResponse(TtsException.Reason.BAD_INPUT.name(),
+                "Request body must be JSON like {\"text\": \"...\"}"));
     }
 
     @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
     public ResponseEntity<ErrorResponse> handleMediaType(HttpMediaTypeNotSupportedException e) {
-        return body(HttpStatus.UNSUPPORTED_MEDIA_TYPE, TtsException.Reason.BAD_INPUT.name(),
-                "Content-Type must be application/json");
+        return body(HttpStatus.UNSUPPORTED_MEDIA_TYPE, new ErrorResponse(TtsException.Reason.BAD_INPUT.name(),
+                "Content-Type must be application/json"));
     }
 
-    private static ResponseEntity<ErrorResponse> body(HttpStatus status, String error, String message) {
+    private static ResponseEntity<ErrorResponse> body(HttpStatus status, ErrorResponse error) {
         return ResponseEntity.status(status)
                 .contentType(MediaType.APPLICATION_JSON)
-                .body(new ErrorResponse(error, message));
+                .body(error);
     }
 }

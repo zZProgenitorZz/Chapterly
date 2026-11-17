@@ -3,8 +3,12 @@ package com.chapterly.service;
 import com.chapterly.error.TtsException;
 import com.chapterly.error.TtsException.Reason;
 import com.chapterly.provider.TtsProvider;
+import com.chapterly.provider.Voice;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -12,23 +16,37 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class TtsServiceTest {
 
-    /** Fake provider that either returns fixed audio or throws a given reason, and counts calls. */
+    /** Fake provider: returns fixed audio or throws a given reason, and records the voices it was asked for. */
     static final class FakeProvider implements TtsProvider {
         private final String name;
-        private final Reason failWith;
-        int calls;
+        private final String defaultVoice;
+        private final boolean available;
+        private Reason failWith;
+        final List<String> calls = new ArrayList<>();
+        int voicesCalls;
 
-        FakeProvider(String name, Reason failWith) {
+        FakeProvider(String name, String defaultVoice, boolean available, Reason failWith) {
             this.name = name;
+            this.defaultVoice = defaultVoice;
+            this.available = available;
             this.failWith = failWith;
         }
 
-        static FakeProvider ok(String name) {
-            return new FakeProvider(name, null);
+        static FakeProvider kokoro() {
+            return new FakeProvider("kokoro", "af_heart", true, null);
         }
 
-        static FakeProvider failing(String name, Reason reason) {
-            return new FakeProvider(name, reason);
+        static FakeProvider azure() {
+            return new FakeProvider("azure", "en-US-BrianNeural", true, null);
+        }
+
+        FakeProvider failing(Reason reason) {
+            this.failWith = reason;
+            return this;
+        }
+
+        FakeProvider unavailable() {
+            return new FakeProvider(name, defaultVoice, false, failWith);
         }
 
         @Override
@@ -37,82 +55,182 @@ class TtsServiceTest {
         }
 
         @Override
-        public byte[] synthesize(String text) throws TtsException {
-            calls++;
+        public String displayName() {
+            return name + " display";
+        }
+
+        @Override
+        public boolean isAvailable() {
+            return available;
+        }
+
+        @Override
+        public String defaultVoice() {
+            return defaultVoice;
+        }
+
+        @Override
+        public List<Voice> voices() {
+            voicesCalls++;
+            return List.of(new Voice(defaultVoice, "Default", "en-US", "female"));
+        }
+
+        @Override
+        public byte[] synthesize(String text, String voice) throws TtsException {
+            calls.add(voice);
             if (failWith != null) {
                 throw new TtsException(failWith, name + " failed");
             }
-            return name.getBytes();
+            return (name + ":" + voice).getBytes();
         }
     }
 
     @Test
-    void usesFirstProviderWhenItSucceeds() throws TtsException {
-        FakeProvider first = FakeProvider.ok("first");
-        FakeProvider second = FakeProvider.ok("second");
+    void textOnlyUsesTheFirstProviderAndItsDefaultVoice() throws TtsException {
+        FakeProvider kokoro = FakeProvider.kokoro();
+        FakeProvider azure = FakeProvider.azure();
 
-        TtsResult result = new TtsService(List.of(first, second)).synthesize("hi");
+        TtsResult result = new TtsService(List.of(kokoro, azure), true).synthesize("hi");
 
-        assertThat(result.provider()).isEqualTo("first");
-        assertThat(result.audio()).isEqualTo("first".getBytes());
-        assertThat(second.calls).isZero();
+        assertThat(result.provider()).isEqualTo("kokoro");
+        assertThat(result.voice()).isEqualTo("af_heart");
+        assertThat(result.fallback()).isFalse();
+        assertThat(kokoro.calls).containsExactly("af_heart");
+        assertThat(azure.calls).isEmpty();
     }
 
     @Test
-    void fallsBackOnQuota() throws TtsException {
-        FakeProvider first = FakeProvider.failing("first", Reason.QUOTA);
-        FakeProvider second = FakeProvider.ok("second");
+    void requestedProviderAndVoiceAreTriedFirst() throws TtsException {
+        FakeProvider kokoro = FakeProvider.kokoro();
+        FakeProvider azure = FakeProvider.azure();
 
-        TtsResult result = new TtsService(List.of(first, second)).synthesize("hi");
+        TtsResult result = new TtsService(List.of(kokoro, azure), true).synthesize("hi", "azure", "en-GB-RyanNeural");
 
-        assertThat(result.provider()).isEqualTo("second");
-        assertThat(first.calls).isEqualTo(1);
+        assertThat(result.provider()).isEqualTo("azure");
+        assertThat(result.voice()).isEqualTo("en-GB-RyanNeural");
+        assertThat(result.fallback()).isFalse();
+        assertThat(kokoro.calls).isEmpty();
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = Reason.class, names = {"QUOTA", "TIMEOUT", "UNAVAILABLE"})
+    void recoverableFailureFallsBackToTheOtherProviderWithItsDefaultVoice(Reason reason) throws TtsException {
+        FakeProvider kokoro = FakeProvider.kokoro().failing(reason);
+        FakeProvider azure = FakeProvider.azure();
+
+        TtsResult result = new TtsService(List.of(kokoro, azure), true).synthesize("hi", "kokoro", "bm_george");
+
+        assertThat(kokoro.calls).containsExactly("bm_george");
+        assertThat(azure.calls).containsExactly("en-US-BrianNeural");
+        assertThat(result.provider()).isEqualTo("azure");
+        assertThat(result.voice()).isEqualTo("en-US-BrianNeural");
+        assertThat(result.fallback()).isTrue();
     }
 
     @Test
-    void fallsBackOnTimeout() throws TtsException {
-        FakeProvider first = FakeProvider.failing("first", Reason.TIMEOUT);
-        FakeProvider second = FakeProvider.ok("second");
+    void fallbackFollowsConfigOrderAfterTheRequestedProvider() throws TtsException {
+        FakeProvider a = new FakeProvider("a", "va", true, null);
+        FakeProvider b = new FakeProvider("b", "vb", true, Reason.QUOTA);
+        FakeProvider c = new FakeProvider("c", "vc", true, null);
 
-        TtsResult result = new TtsService(List.of(first, second)).synthesize("hi");
+        TtsResult result = new TtsService(List.of(a, b, c), true).synthesize("hi", "b", null);
 
-        assertThat(result.provider()).isEqualTo("second");
+        assertThat(result.provider()).isEqualTo("a");
+        assertThat(c.calls).isEmpty();
     }
 
     @Test
-    void doesNotFallBackOnBadInput() {
-        FakeProvider first = FakeProvider.failing("first", Reason.BAD_INPUT);
-        FakeProvider second = FakeProvider.ok("second");
+    void noFallbackWhenDisabled() {
+        FakeProvider kokoro = FakeProvider.kokoro().failing(Reason.UNAVAILABLE);
+        FakeProvider azure = FakeProvider.azure();
 
-        assertThatThrownBy(() -> new TtsService(List.of(first, second)).synthesize("hi"))
+        assertThatThrownBy(() -> new TtsService(List.of(kokoro, azure), false).synthesize("hi"))
                 .isInstanceOf(TtsException.class)
-                .extracting(e -> ((TtsException) e).getReason())
-                .isEqualTo(Reason.BAD_INPUT);
-        assertThat(second.calls).isZero();
+                .satisfies(e -> {
+                    assertThat(((TtsException) e).getReason()).isEqualTo(Reason.UNAVAILABLE);
+                    assertThat(((TtsException) e).getProvider()).isEqualTo("kokoro");
+                });
+        assertThat(azure.calls).isEmpty();
     }
 
     @Test
-    void doesNotFallBackOnUpstreamError() {
-        FakeProvider first = FakeProvider.failing("first", Reason.UPSTREAM_ERROR);
-        FakeProvider second = FakeProvider.ok("second");
+    void unavailableProvidersAreSkippedDuringFallback() {
+        FakeProvider kokoro = FakeProvider.kokoro().failing(Reason.UNAVAILABLE);
+        FakeProvider azure = FakeProvider.azure().unavailable();
 
-        assertThatThrownBy(() -> new TtsService(List.of(first, second)).synthesize("hi"))
-                .extracting(e -> ((TtsException) e).getReason())
-                .isEqualTo(Reason.UPSTREAM_ERROR);
-        assertThat(second.calls).isZero();
+        assertThatThrownBy(() -> new TtsService(List.of(kokoro, azure), true).synthesize("hi"))
+                .satisfies(e -> assertThat(((TtsException) e).getReason()).isEqualTo(Reason.UNAVAILABLE));
+        assertThat(azure.calls).isEmpty();
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = Reason.class, names = {"BAD_INPUT", "UPSTREAM_ERROR"})
+    void nonRecoverableFailureIsNotRetriedElsewhere(Reason reason) {
+        FakeProvider kokoro = FakeProvider.kokoro().failing(reason);
+        FakeProvider azure = FakeProvider.azure();
+
+        assertThatThrownBy(() -> new TtsService(List.of(kokoro, azure), true).synthesize("hi"))
+                .satisfies(e -> assertThat(((TtsException) e).getReason()).isEqualTo(reason));
+        assertThat(azure.calls).isEmpty();
     }
 
     @Test
-    void throwsLastErrorWhenAllProvidersFail() {
-        FakeProvider first = FakeProvider.failing("first", Reason.QUOTA);
-        FakeProvider second = FakeProvider.failing("second", Reason.TIMEOUT);
+    void lastErrorIsThrownWhenAllProvidersFail() {
+        FakeProvider kokoro = FakeProvider.kokoro().failing(Reason.UNAVAILABLE);
+        FakeProvider azure = FakeProvider.azure().failing(Reason.QUOTA);
 
-        assertThatThrownBy(() -> new TtsService(List.of(first, second)).synthesize("hi"))
-                .isInstanceOf(TtsException.class)
-                .hasMessage("second failed")
-                .extracting(e -> ((TtsException) e).getReason())
-                .isEqualTo(Reason.TIMEOUT);
-        assertThat(first.calls).isEqualTo(1);
-        assertThat(second.calls).isEqualTo(1);
+        assertThatThrownBy(() -> new TtsService(List.of(kokoro, azure), true).synthesize("hi"))
+                .hasMessage("azure failed")
+                .satisfies(e -> {
+                    assertThat(((TtsException) e).getReason()).isEqualTo(Reason.QUOTA);
+                    assertThat(((TtsException) e).getProvider()).isEqualTo("azure");
+                });
+    }
+
+    @Test
+    void unknownProviderIsBadInput() {
+        assertThatThrownBy(() -> new TtsService(List.of(FakeProvider.kokoro()), true).synthesize("hi", "polly", null))
+                .hasMessage("Unknown TTS provider 'polly'")
+                .satisfies(e -> assertThat(((TtsException) e).getReason()).isEqualTo(Reason.BAD_INPUT));
+    }
+
+    @Test
+    void requestingAnUnconfiguredProviderIsBadInput() {
+        FakeProvider azure = FakeProvider.azure().unavailable();
+
+        assertThatThrownBy(() -> new TtsService(List.of(FakeProvider.kokoro(), azure), true).synthesize("hi", "azure", null))
+                .hasMessage("Azure is not configured on the backend")
+                .satisfies(e -> {
+                    assertThat(((TtsException) e).getReason()).isEqualTo(Reason.BAD_INPUT);
+                    assertThat(((TtsException) e).getProvider()).isEqualTo("azure");
+                });
+        assertThat(azure.calls).isEmpty();
+    }
+
+    @Test
+    void defaultProviderIsTheFirstAvailableOne() throws TtsException {
+        FakeProvider azure = FakeProvider.azure().unavailable();
+        FakeProvider kokoro = FakeProvider.kokoro();
+
+        assertThat(new TtsService(List.of(azure, kokoro), true).synthesize("hi").provider()).isEqualTo("kokoro");
+    }
+
+    @Test
+    void listVoicesSkipsVoicesOfUnavailableProviders() {
+        FakeProvider kokoro = FakeProvider.kokoro();
+        FakeProvider azure = FakeProvider.azure().unavailable();
+
+        VoiceCatalog catalog = new TtsService(List.of(kokoro, azure), true).listVoices();
+
+        assertThat(catalog.defaultProvider()).isEqualTo("kokoro");
+        assertThat(catalog.providers()).extracting(VoiceCatalog.ProviderVoices::name).containsExactly("kokoro", "azure");
+        VoiceCatalog.ProviderVoices k = catalog.providers().get(0);
+        assertThat(k.available()).isTrue();
+        assertThat(k.defaultVoice()).isEqualTo("af_heart");
+        assertThat(k.voices()).hasSize(1);
+        VoiceCatalog.ProviderVoices a = catalog.providers().get(1);
+        assertThat(a.available()).isFalse();
+        assertThat(a.voices()).isEmpty();
+        assertThat(azure.voicesCalls).isZero();
     }
 }

@@ -1,10 +1,26 @@
-# Copy to ./application-local.yml (gitignored) to configure secrets locally
-# instead of using environment variables. Never commit the real file.
+# Copy to ./application-local.yml (gitignored) to override settings locally.
+# For secrets, prefer ./.env (see .env.example). Never commit the real files.
 chapterly:
   providers:
+    - kokoro
     - azure
+  fallback: true
+  kokoro:
+    base-url: http://localhost:8880
+    default-voice: af_heart
+    model: kokoro
+    timeout: 30s
   azure:
     key: your-azure-speech-key
-    region: westeurope
+    region: switzerlandnorth
     voice: en-US-BrianNeural
     timeout: 8s
+    voices:
+      - en-US-BrianNeural
+      - en-US-AndrewNeural
+      - en-US-GuyNeural
+      - en-US-AvaNeural
+      - en-US-EmmaNeural
+      - en-US-JennyNeural
+      - en-GB-RyanNeural
+      - en-GB-SoniaNeural

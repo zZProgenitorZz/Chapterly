@@ -12,13 +12,28 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /** Azure Speech (REST) provider. Knows only the Azure API. */
 @Component
 public class AzureTtsProvider implements TtsProvider {
 
     static final String OUTPUT_FORMAT = "audio-24khz-48kbitrate-mono-mp3";
+
+    /** "en-US-BrianNeural" -> locale "en-US", name "Brian". */
+    private static final Pattern VOICE_ID = Pattern.compile("^([a-z]{2,3})-([A-Z]{2})-([A-Za-z]+?)(?:Multilingual)?Neural$");
+
+    /** Azure voice ids don't encode gender; these are the ones we offer by default. */
+    private static final Map<String, String> KNOWN_GENDERS = Map.ofEntries(
+            Map.entry("Brian", "male"), Map.entry("Andrew", "male"), Map.entry("Guy", "male"),
+            Map.entry("Ryan", "male"), Map.entry("Davis", "male"), Map.entry("Christopher", "male"),
+            Map.entry("Ava", "female"), Map.entry("Emma", "female"), Map.entry("Jenny", "female"),
+            Map.entry("Sonia", "female"), Map.entry("Aria", "female"), Map.entry("Libby", "female"));
 
     private final AzureProperties props;
     private final SsmlBuilder ssmlBuilder;
@@ -38,10 +53,34 @@ public class AzureTtsProvider implements TtsProvider {
     }
 
     @Override
-    public byte[] synthesize(String text) throws TtsException {
+    public String displayName() {
+        return "Microsoft Azure";
+    }
+
+    @Override
+    public boolean isAvailable() {
+        return props.isConfigured();
+    }
+
+    @Override
+    public String defaultVoice() {
+        return props.voice();
+    }
+
+    /** The configured list (default voice first if it is missing from the list). No API call. */
+    @Override
+    public List<Voice> voices() {
+        return offeredVoiceIds().stream().map(AzureTtsProvider::toVoice).toList();
+    }
+
+    @Override
+    public byte[] synthesize(String text, String voice) throws TtsException {
         if (!props.isConfigured()) {
-            throw new TtsException(Reason.UPSTREAM_ERROR,
-                    "Azure is not configured (set AZURE_SPEECH_KEY and AZURE_SPEECH_REGION)");
+            throw new TtsException(Reason.BAD_INPUT, "Azure is not configured on the backend");
+        }
+        String voiceId = voice == null || voice.isBlank() ? props.voice() : voice;
+        if (!offeredVoiceIds().contains(voiceId)) {
+            throw new TtsException(Reason.BAD_INPUT, "Unknown Azure voice");
         }
 
         HttpRequest request = HttpRequest.newBuilder()
@@ -51,7 +90,7 @@ public class AzureTtsProvider implements TtsProvider {
                 .header("Content-Type", "application/ssml+xml")
                 .header("X-Microsoft-OutputFormat", OUTPUT_FORMAT)
                 .header("User-Agent", "chapterly")
-                .POST(HttpRequest.BodyPublishers.ofString(ssmlBuilder.build(props.voice(), text), StandardCharsets.UTF_8))
+                .POST(HttpRequest.BodyPublishers.ofString(ssmlBuilder.build(voiceId, text), StandardCharsets.UTF_8))
                 .build();
 
         HttpResponse<byte[]> response;
@@ -69,6 +108,27 @@ public class AzureTtsProvider implements TtsProvider {
         }
 
         return handleResponse(response.statusCode(), response.body());
+    }
+
+    private List<String> offeredVoiceIds() {
+        List<String> ids = new ArrayList<>(props.voices());
+        if (!ids.contains(props.voice())) {
+            ids.addFirst(props.voice());
+        }
+        return ids;
+    }
+
+    /** "en-US-BrianNeural" -> Voice("en-US-BrianNeural", "Brian (US, male)", "en-US", "male"). */
+    static Voice toVoice(String id) {
+        Matcher m = VOICE_ID.matcher(id);
+        if (!m.matches()) {
+            return new Voice(id, id, null, null);
+        }
+        String country = m.group(2);
+        String name = m.group(3);
+        String gender = KNOWN_GENDERS.get(name);
+        String label = name + " (" + country + (gender != null ? ", " + gender : "") + ")";
+        return new Voice(id, label, m.group(1) + "-" + country, gender);
     }
 
     /** Maps an Azure HTTP response to MP3 bytes or a TtsException. Package-private for tests. */

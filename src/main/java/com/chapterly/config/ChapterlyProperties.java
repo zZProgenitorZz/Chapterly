@@ -5,7 +5,14 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
 
 import java.util.List;
 
-/** Top-level settings. {@code providers} is the fallback order, by provider name. */
+/**
+ * Top-level settings.
+ *
+ * @param providers configured providers by name; the first available one is the default
+ * @param fallback  whether to try the other providers when the requested one fails recoverably
+ */
 @ConfigurationProperties(prefix = "chapterly")
-public record ChapterlyProperties(@DefaultValue("azure") List<String> providers) {
+public record ChapterlyProperties(
+        @DefaultValue({"kokoro", "azure"}) List<String> providers,
+        @DefaultValue("true") boolean fallback) {
 }
