@@ -3,8 +3,18 @@
 #   kokoro   local Kokoro-FastAPI text-to-speech (CPU image; GPU variant below)
 #   backend  Chapterly backend on http://localhost:8080
 #
-# Both ports are bound to 127.0.0.1 only. Host ports can be changed with
-# CHAPTERLY_KOKORO_PORT / CHAPTERLY_BACKEND_PORT (e.g. in your shell).
+# Kokoro is bound to 127.0.0.1 only. The backend is published on CHAPTERLY_BIND
+# (default 127.0.0.1, this machine only). Host ports can be changed with
+# CHAPTERLY_KOKORO_PORT / CHAPTERLY_BACKEND_PORT.
+#
+# Another laptop over Tailscale: set CHAPTERLY_BIND to this machine's Tailscale IP
+# (tailscale ip -4), e.g. in ./.env next to this file (compose reads .env for variable
+# substitution):
+#   CHAPTERLY_BIND=100.101.102.103
+#   CHAPTERLY_API_TOKEN=<long random string>   # same value in the extension's Settings
+# Don't use 0.0.0.0: that also exposes /api/tts to everyone on the same Wi-Fi/LAN, who
+# could use up the Azure quota (CORS doesn't stop non-browser clients).
+#
 # Azure is optional: put AZURE_SPEECH_KEY / AZURE_SPEECH_REGION in ./.env.
 
 services:
@@ -47,7 +57,7 @@ services:
     image: chapterly-backend:latest
     restart: unless-stopped
     ports:
-      - "${CHAPTERLY_BACKEND_PORT:-8080}:8080"
+      - "${CHAPTERLY_BIND:-127.0.0.1}:${CHAPTERLY_BACKEND_PORT:-8080}:8080"
     env_file:
       - path: .env
         required: false # works without Azure

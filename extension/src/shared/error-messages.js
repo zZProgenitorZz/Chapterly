@@ -32,6 +32,11 @@ export function describeError(error) {
     case 'PlaybackError':
       return 'The audio could not be played';
     case 'BackendError': {
+      if (error.status === 401 || error.reason === 'UNAUTHORIZED') {
+        return /missing/i.test(error.message ?? '')
+          ? 'The backend requires an API token. Enter it under Settings → API token.'
+          : 'The backend rejected the API token. Check Settings → API token (it must match CHAPTERLY_API_TOKEN on the backend).';
+      }
       const name = providerName(error.provider);
       switch (error.reason) {
         case 'UNAVAILABLE':
@@ -59,6 +64,6 @@ export function describeError(error) {
 /** Extra detail worth showing under the main message, or '' if it adds nothing. */
 export function errorDetail(error) {
   if (!error || error.kind !== 'BackendError') return '';
-  if (error.reason === 'BAD_INPUT' || error.reason === 'UNAVAILABLE') return '';
+  if (error.reason === 'BAD_INPUT' || error.reason === 'UNAVAILABLE' || error.reason === 'UNAUTHORIZED') return '';
   return error.message ?? '';
 }

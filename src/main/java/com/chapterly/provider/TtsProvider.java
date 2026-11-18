@@ -37,4 +37,14 @@ public interface TtsProvider {
      * @throws TtsException BAD_INPUT for a voice this provider does not offer
      */
     byte[] synthesize(String text, String voice) throws TtsException;
+
+    /**
+     * True for a local engine that does one request at a time anyway (Kokoro on one GPU or
+     * CPU): its requests then go through the {@code TtsQueue}, so the chunk a listener is
+     * waiting for runs before prefetches and cancelled requests never reach the engine.
+     * Remote providers (Azure) run in parallel and return false.
+     */
+    default boolean queued() {
+        return false;
+    }
 }

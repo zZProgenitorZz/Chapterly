@@ -16,14 +16,20 @@
     if (document.getElementById(STYLE_ID)) return;
     const style = document.createElement('style');
     style.id = STYLE_ID;
+    // Translucent purple tint (text colour untouched, so it stays readable on light and
+    // dark sites) and a 3px purple bar on the left. Both are box-shadows: they paint outside
+    // the element and never shift the page's layout.
     style.textContent = `.${CLASS} {
-      background-color: rgba(255, 210, 80, 0.28) !important;
-      box-shadow: 0 0 0 4px rgba(255, 210, 80, 0.28) !important;
-      border-radius: 3px;
+      background-color: rgba(139, 92, 246, 0.18) !important;
+      box-shadow: -3px 0 0 0 #8b5cf6, 0 0 0 3px rgba(139, 92, 246, 0.18) !important;
+      border-radius: 2px;
       transition: background-color 0.25s ease;
     }
     ::highlight(${SENTENCE_HIGHLIGHT}) {
-      background-color: rgba(255, 170, 0, 0.35);
+      background-color: rgba(45, 212, 191, 0.25);
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .${CLASS} { transition: none; }
     }
     .chapterly-click [${P_ATTR}] {
       cursor: pointer;

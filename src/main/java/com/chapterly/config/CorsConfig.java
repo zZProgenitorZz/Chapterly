@@ -20,8 +20,8 @@ public class CorsConfig implements WebMvcConfigurer {
     public void addCorsMappings(CorsRegistry registry) {
         registry.addMapping("/api/**")
                 .allowedOriginPatterns(props.allowedOriginPatterns().toArray(String[]::new))
-                .allowedMethods("GET", "POST", "OPTIONS")
-                .allowedHeaders("Content-Type")
+                .allowedMethods("GET", "POST", "DELETE", "OPTIONS")
+                .allowedHeaders("Content-Type", "X-Chapterly-Request-Id", "X-Chapterly-Priority", "X-Chapterly-Token")
                 .exposedHeaders("X-TTS-Provider", "X-TTS-Voice", "X-TTS-Fallback");
     }
 }

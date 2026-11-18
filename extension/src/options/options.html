@@ -2,152 +2,122 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Chapterly settings</title>
-    <style>
-      :root {
-        color-scheme: light dark;
-        --muted: #6b6f7b;
-        --ok: #2e7d32;
-        --err: #c62828;
-      }
-      @media (prefers-color-scheme: dark) {
-        :root {
-          --muted: #9a9eaa;
-          --ok: #81c784;
-          --err: #ff8a80;
-        }
-      }
-      body {
-        font: 14px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif;
-        margin: 16px;
-        min-width: 380px;
-      }
-      section + section {
-        margin-top: 20px;
-      }
-      label {
-        display: block;
-        font-weight: 600;
-        margin-bottom: 4px;
-      }
-      input,
-      select {
-        width: 100%;
-        box-sizing: border-box;
-        font: inherit;
-        padding: 6px 8px;
-      }
-      .hint {
-        color: var(--muted);
-        font-size: 12px;
-        margin: 6px 0 12px;
-      }
-      .row {
-        display: flex;
-        gap: 8px;
-        align-items: center;
-        flex-wrap: wrap;
-      }
-      button {
-        font: inherit;
-        padding: 5px 12px;
-      }
-      [data-kind='ok'] {
-        color: var(--ok);
-      }
-      [data-kind='error'] {
-        color: var(--err);
-      }
-      [data-kind='info'] {
-        color: var(--muted);
-      }
-      .checks label {
-        font-weight: normal;
-        display: flex;
-        gap: 6px;
-        align-items: center;
-        margin-bottom: 4px;
-      }
-      .checks input,
-      .row input[type='range'] {
-        width: auto;
-      }
-      #shortcut-list {
-        padding-left: 18px;
-      }
-    </style>
+    <link rel="stylesheet" href="options.css" />
   </head>
   <body>
-    <section>
-      <form id="form">
-        <label for="backendUrl">Backend URL</label>
-        <input id="backendUrl" name="backendUrl" type="url" required spellcheck="false" />
+    <main class="column">
+      <header class="page-header">
+        <span class="brand-mark"><img src="../../icons/icon48.png" alt="" width="20" height="20" /></span>
+        <div>
+          <h1>Chapterly</h1>
+          <p class="subtitle">Settings</p>
+        </div>
+      </header>
+      <section class="card">
+        <form id="form">
+          <label for="backendUrl">Backend URL</label>
+          <input id="backendUrl" name="backendUrl" type="url" required spellcheck="false" />
+          <p class="hint">
+            The local Chapterly backend. Default: <code>http://localhost:8080</code>. The extension has host
+            permission for localhost:8080 and 127.0.0.1:8080; any other address works only through the
+            backend's CORS settings.
+          </p>
+          <div class="row">
+            <button type="submit">Save</button>
+            <button type="button" id="reset">Reset to default</button>
+            <span id="message" role="status"></span>
+          </div>
+        </form>
+      </section>
+
+      <section class="card">
+        <form id="token-form">
+          <label for="apiToken">API token</label>
+          <input id="apiToken" name="apiToken" type="password" autocomplete="off" spellcheck="false" />
+          <p class="hint">
+            Only needed when the backend sets <code>CHAPTERLY_API_TOKEN</code> (for example when another laptop
+            reaches it over Tailscale). Enter the same value; it is sent as <code>X-Chapterly-Token</code> with
+            every request. Stored on this computer only, never synced. Leave empty for a local backend without a
+            token.
+          </p>
+          <div class="row">
+            <button type="submit">Save token</button>
+            <label class="inline-check"><input type="checkbox" id="token-show" /> Show</label>
+            <span id="token-message" role="status"></span>
+          </div>
+        </form>
+      </section>
+
+      <section class="card">
+        <label for="voice">Voice</label>
+        <select id="voice" disabled>
+          <option>Loading voices…</option>
+        </select>
         <p class="hint">
-          The local Chapterly backend. Default: <code>http://localhost:8080</code>. The extension has host
-          permission for localhost:8080 and 127.0.0.1:8080; any other address works only through the
-          backend's CORS settings.
+          Kokoro runs locally and is the default. Microsoft Azure voices appear when the backend has Azure
+          credentials. If the chosen voice's provider fails, the backend may fall back to another provider.
         </p>
         <div class="row">
-          <button type="submit">Save</button>
-          <button type="button" id="reset">Reset to default</button>
-          <span id="message" role="status"></span>
+          <button type="button" id="preview" disabled>Preview</button>
+          <span id="voice-message" role="status"></span>
         </div>
-      </form>
-    </section>
+        <audio id="preview-audio" hidden></audio>
+      </section>
 
-    <section>
-      <label for="voice">Voice</label>
-      <select id="voice" disabled>
-        <option>Loading voices…</option>
-      </select>
-      <p class="hint">
-        Kokoro runs locally and is the default. Microsoft Azure voices appear when the backend has Azure
-        credentials. If the chosen voice's provider fails, the backend may fall back to another provider.
-      </p>
-      <div class="row">
-        <button type="button" id="preview" disabled>Preview</button>
-        <span id="voice-message" role="status"></span>
-      </div>
-      <audio id="preview-audio" hidden></audio>
-    </section>
+      <section class="card">
+        <label for="speed">Speed</label>
+        <div class="row speed-row">
+          <input id="speed" type="range" min="0.75" max="2.5" step="0.05" />
+          <output id="speed-value" for="speed">1x</output>
+          <button type="button" id="speed-reset">1x</button>
+        </div>
+        <p class="hint">Also adjustable in the popup while reading. Changing it never re-requests audio.</p>
+      </section>
 
-    <section>
-      <label for="speed">Speed</label>
-      <div class="row">
-        <input id="speed" type="range" min="0.75" max="2.5" step="0.05" style="flex: 1" />
-        <output id="speed-value" for="speed">1x</output>
-        <button type="button" id="speed-reset">1x</button>
-      </div>
-      <p class="hint">Also adjustable in the popup while reading. Changing it never re-requests audio.</p>
-    </section>
+      <section class="card">
+        <label>Reading</label>
+        <div class="checks">
+          <label><span>Continue with the next chapter</span><input type="checkbox" class="switch" id="autoNextChapter" /></label>
+          <label><span>Arrow keys control reading (← → on the chapter page, k = play/pause)</span><input type="checkbox" class="switch" id="arrowKeysControl" /></label>
+          <label><span>Click a paragraph to read from there</span><input type="checkbox" class="switch" id="clickToJump" /></label>
+        </div>
+        <p class="hint">
+          While a chapter is being read, Chapterly takes over the page's arrow keys (some sites use them for
+          chapter navigation). Keys are ignored while you type in a field.
+        </p>
+      </section>
 
-    <section>
-      <label>Reading</label>
-      <div class="checks">
-        <label><input type="checkbox" id="autoNextChapter" /> Continue with the next chapter</label>
-        <label><input type="checkbox" id="arrowKeysControl" /> Arrow keys control reading (← → on the chapter page, k = play/pause)</label>
-        <label><input type="checkbox" id="clickToJump" /> Click a paragraph to read from there</label>
-      </div>
-      <p class="hint">
-        While a chapter is being read, Chapterly takes over the page's arrow keys (some sites use them for
-        chapter navigation). Keys are ignored while you type in a field.
-      </p>
-    </section>
+      <section class="card">
+        <label>Keyboard shortcuts</label>
+        <ul id="shortcut-list" class="hint"></ul>
+        <button type="button" id="edit-shortcuts">Change shortcuts…</button>
+      </section>
 
-    <section>
-      <label>Keyboard shortcuts</label>
-      <ul id="shortcut-list" class="hint"></ul>
-      <button type="button" id="edit-shortcuts">Change shortcuts…</button>
-    </section>
+      <section class="card">
+        <label>Saved positions</label>
+        <p class="hint" id="positions-info">Chapterly remembers where you stopped in each novel.</p>
+        <div class="row">
+          <button type="button" id="forget-positions">Forget saved positions</button>
+          <span id="positions-message" role="status"></span>
+        </div>
+      </section>
 
-    <section>
-      <label>Saved positions</label>
-      <p class="hint" id="positions-info">Chapterly remembers where you stopped in each novel.</p>
-      <div class="row">
-        <button type="button" id="forget-positions">Forget saved positions</button>
-        <span id="positions-message" role="status"></span>
-      </div>
-    </section>
+      <section class="card">
+        <label>Audio cache</label>
+        <p class="hint" id="audio-cache-info">
+          Finished audio is kept on this computer (at most 150 MB), so resuming after a long pause, going
+          back and reading a chapter again need no new request.
+        </p>
+        <div class="row">
+          <button type="button" id="clear-audio-cache">Clear audio cache</button>
+          <span id="audio-cache-message" role="status"></span>
+        </div>
+      </section>
+
+    
+    </main>
 
     <script type="module" src="options.js"></script>
   </body>

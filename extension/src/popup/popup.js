@@ -12,6 +12,7 @@ const $ = (id) => document.getElementById(id);
 const els = {
   status: $('status'),
   title: $('title'),
+  series: $('series'),
   extractor: $('extractor'),
   progress: $('progress'),
   provider: $('provider'),
@@ -95,7 +96,11 @@ function render(state, event) {
   els.title.textContent = hasSession ? state.title || 'Selected text' : 'Nothing loaded';
   const extractorId = state?.meta?.extractorId;
   els.extractor.textContent = hasSession && extractorId && extractorId !== 'selection' ? extractorId : '';
+  els.series.textContent = hasSession ? state.meta?.seriesTitle ?? '' : '';
   els.progress.textContent = hasSession && state.total ? `${state.index + 1} / ${state.total}` : '';
+  // Display only: width of the progress bar.
+  const fraction = hasSession && state.total ? (state.index + 1) / state.total : 0;
+  document.body.style.setProperty('--progress', String(Math.min(1, Math.max(0, fraction))));
   els.provider.textContent = hasSession ? describeVoice(state, catalog) : '';
   els.provider.classList.toggle('fallback', Boolean(state?.fallback));
 
@@ -111,6 +116,7 @@ function render(state, event) {
   renderChapterBox(state, chapter, finished);
 
   els.toggle.textContent = busy ? 'Pause' : status === 'error' ? 'Retry' : 'Play';
+  els.toggle.dataset.action = busy ? 'pause' : status === 'error' ? 'retry' : 'play'; // picks the icon (CSS)
   els.toggle.disabled = !hasSession;
   els.stop.disabled = !hasSession || status === 'idle';
   els.previous.disabled = !hasSession;
@@ -254,7 +260,7 @@ async function loadSettings() {
   els.autoNext.checked = settings.autoNextChapter;
   const selection = { provider: settings.provider, voice: settings.voice };
   try {
-    catalog = await fetchVoices(settings.backendUrl);
+    catalog = await fetchVoices(settings.backendUrl, { apiToken: settings.apiToken });
     renderVoiceOptions(els.voice, catalog, selection, { markDefault: false });
     els.voice.disabled = false;
     if (current) render(current); // labels for the "Voice:" line
@@ -298,7 +304,19 @@ const activeTabReady = chrome.tabs.query({ active: true, currentWindow: true }).
 void loadSettings();
 void loadShortcuts();
 
-command(PlayerCommand.GET_STATE).catch((err) => {
+const initialState = command(PlayerCommand.GET_STATE).catch((err) => {
   console.error('[chapterly:popup]', err);
   render(null);
+  return null;
+});
+
+const stripHash = (url) => String(url ?? '').split('#')[0];
+
+// Warm start: on a page that isn't being read, let the service worker extract the chapter
+// and fetch its first chunk now, so "Read chapter" starts at once. Only on sites Chapterly
+// may already access; nothing plays and the current session is untouched.
+Promise.all([activeTabReady, initialState]).then(([, state]) => {
+  if (activeTab?.id == null || !originGranted || !originPattern(activeTab.url)) return;
+  if (state?.sessionId && state.meta?.kind === 'chapter' && stripHash(state.meta.url) === stripHash(activeTab.url)) return;
+  toBackground(MessageType.PREPARE_CHAPTER, { tabId: activeTab.id }).catch(() => {});
 });

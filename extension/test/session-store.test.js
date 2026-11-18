@@ -165,3 +165,49 @@ test('resume is offered only in the middle of an unfinished chapter', () => {
   assert.equal(resumeOffer(at(12, { finished: true }), 40), null, 'finished');
   assert.equal(resumeOffer(null, 40), null);
 });
+
+// ---------- restore after a long pause: paused, playing, prepared ----------
+
+test('restore: a paused snapshot restores PAUSED at its position (not idle)', () => {
+  const stored = { ...session, currentIndex: 6 };
+  const payload = buildRestorePayload(stored, { status: 'idle', sessionId: null }, { sessionId: 's1', status: 'paused', index: 6, position: 12.3 }, 'u');
+  assert.equal(payload.startPaused, true);
+  assert.equal(payload.autoplay, false);
+  assert.equal(payload.startTime, 12.3);
+});
+
+test('restore: a playing snapshot restores and plays on', () => {
+  const stored = { ...session, currentIndex: 4 };
+  for (const status of ['playing', 'loading', 'buffering']) {
+    const payload = buildRestorePayload(stored, null, { sessionId: 's1', status, index: 4, position: 2 }, 'u');
+    assert.equal(payload.autoplay, true, status);
+    assert.equal(payload.startPaused, false, status);
+    assert.equal(payload.startTime, 2, status);
+  }
+});
+
+test('restore: idle, error or another session\'s snapshot restores idle as before', () => {
+  const stored = { ...session, currentIndex: 4 };
+  for (const snapshot of [{ sessionId: 's1', status: 'idle', index: 4 }, { sessionId: 's1', status: 'error', index: 4 }, { sessionId: 'old', status: 'paused', index: 4, position: 9 }, null]) {
+    const payload = buildRestorePayload(stored, null, snapshot, 'u');
+    assert.equal(payload.startPaused, false);
+    assert.equal(payload.autoplay, false);
+    assert.equal(payload.startTime, 0);
+  }
+});
+
+test('restore: a player holding a prepared chapter is reloaded with the active session', () => {
+  const payload = buildRestorePayload(session, { sessionId: 'prepared-1', prepared: true }, null, 'u');
+  assert.ok(payload);
+  assert.equal(payload.session.sessionId, 's1');
+});
+
+test('prepared chapter record: save, read, clear', async () => {
+  const store = createSessionStore(fakeArea());
+  assert.equal(await store.getPreparedChapter(), null);
+  const prepared = { tabId: 7, url: session.url, preparedAt: 1, doc: { url: session.url }, session: { sessionId: 'p' }, startIndex: 3 };
+  await store.savePreparedChapter(prepared);
+  assert.deepEqual(await store.getPreparedChapter(), prepared);
+  await store.clearPreparedChapter();
+  assert.equal(await store.getPreparedChapter(), null);
+});

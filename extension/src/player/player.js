@@ -9,9 +9,20 @@
 // The voice selection ({provider, voice}) is passed to fetchSpeech with every request.
 // setVoice() drops the prefetched audio and restarts the current chunk in the new voice.
 //
+// Seeks (next, previous, paragraph skips, seekToChunk) move the index and the highlight at
+// once (chunkSelected). Audio for a target that is already cached plays at once; otherwise
+// it is requested only after seekDebounceMs without another seek, so pressing "previous"
+// five times requests one chunk, not five.
+//
+// load({paused: true}) restores a session in PAUSED state: the chunk is loaded (from the
+// persistent audio store when possible) at startTime without playing. load({prepared: true})
+// does the same for a chapter that is only being warmed up; a later load() of the same
+// session at the same chunk reuses it instead of starting over.
+//
 // Events (onEvent({type, data, state})):
-//   stateChanged, chunkStarted {index, paragraphIndexes}, buffering {index},
-//   sessionFinished {sessionId}, error {kind, message, chunkIndex, ...}
+//   stateChanged, chunkStarted {index, paragraphIndexes, ...}, chunkSelected (same data, on
+//   every seek, also while paused), buffering {index}, sessionFinished {sessionId},
+//   error {kind, message, chunkIndex, ...}
 
 import { AudioCache, DEFAULT_PREFETCH } from './audio-cache.js';
 import { toErrorInfo } from './tts-client.js';
@@ -27,12 +38,18 @@ export const Status = Object.freeze({
 });
 
 const RESTART_THRESHOLD_S = 3; // previous(): restart the chunk if further in than this
+export const SEEK_DEBOUNCE_MS = 200;
 
 export class Player {
   #fetchSpeech;
   #onEvent;
   #urls;
   #cacheOptions;
+  #audioStore;
+  #seekDebounceMs;
+  #timers;
+  #seekTimer = null;
+  #prepared = false;
 
   #slots; // [{el, index, provider, voice, fallback}] x2
   #active = 0;
@@ -58,6 +75,9 @@ export class Player {
    * @param {Function} deps.fetchSpeech (text, {signal, provider, voice}) => Promise<{blob, provider, voice, fallback}>
    * @param {HTMLAudioElement[]} [deps.audios] two audio elements (default: new Audio() x2)
    * @param {Function} [deps.onEvent]
+   * @param {{get, put}} [deps.audioStore] persistent audio store (audio-store.js)
+   * @param {number} [deps.maxInFlight] prefetch requests at a time (the current chunk is extra)
+   * @param {number} [deps.seekDebounceMs] quiet time before a seek requests uncached audio
    */
   constructor({
     fetchSpeech,
@@ -66,14 +86,20 @@ export class Player {
     urls = URL,
     prefetchChars = DEFAULT_PREFETCH.prefetchChars,
     prefetchMaxChunks = DEFAULT_PREFETCH.prefetchMaxChunks,
-    maxInFlight = 2,
+    maxInFlight = 1,
     retryDelayMs = 1000,
+    audioStore = null,
+    seekDebounceMs = SEEK_DEBOUNCE_MS,
+    timers = globalThis,
   }) {
     if (typeof fetchSpeech !== 'function') throw new TypeError('Player needs fetchSpeech');
     this.#fetchSpeech = fetchSpeech;
     this.#onEvent = onEvent;
     this.#urls = urls;
     this.#cacheOptions = { prefetchChars, prefetchMaxChunks, maxInFlight, retryDelayMs };
+    this.#audioStore = audioStore;
+    this.#seekDebounceMs = Math.max(0, seekDebounceMs);
+    this.#timers = timers;
     const els = audios ?? [new Audio(), new Audio()];
     this.#slots = els.slice(0, 2).map((el, i) => {
       el.preload = 'auto';
@@ -86,9 +112,14 @@ export class Player {
 
   // ---------- public API ----------
 
-  /** @param {{provider, voice}} [voice] voice selection; omitted = keep the current one */
-  load({ sessionId, title = '', chunks, startIndex = 0, startTime = 0, meta = null, voice }) {
+  /**
+   * @param {{provider, voice}} [voice] voice selection; omitted = keep the current one
+   * @param {boolean} [paused] load the start chunk at startTime without playing (status PAUSED)
+   * @param {boolean} [prepared] like paused, for a chapter that is only being warmed up
+   */
+  load({ sessionId, title = '', chunks, startIndex = 0, startTime = 0, meta = null, voice, paused = false, prepared = false }) {
     if (!Array.isArray(chunks) || chunks.length === 0) throw new Error('Session has no chunks');
+    if (!prepared && this.#reusePrepared(sessionId, clamp(startIndex | 0, 0, chunks.length - 1), voice)) return;
     this.#resetAudio();
     this.#cache?.clear();
     if (voice !== undefined) this.#selection = normalizeSelection(voice);
@@ -110,11 +141,16 @@ export class Player {
         };
       }),
     };
+    const store = this.#audioStore;
     this.#cache = new AudioCache({
       // Read the selection at request time, so requests after setVoice() use the new voice.
       fetchSpeech: (text, options) => this.#fetchSpeech(text, { ...options, ...(this.#selection ?? {}) }),
       texts: this.#session.chunks.map((c) => c.text),
       urls: this.#urls,
+      persistent: store && {
+        lookup: (text) => store.get(this.#selection, text),
+        save: (text, result) => store.put(this.#selection, text, result),
+      },
       ...this.#cacheOptions,
     });
     this.#index = clamp(startIndex | 0, 0, chunks.length - 1);
@@ -125,7 +161,52 @@ export class Player {
     this.#error = null;
     this.#finished = false;
     this.#wantPlay = false;
-    this.#setStatus(Status.IDLE);
+    this.#prepared = Boolean(prepared);
+    if (paused || prepared) {
+      void this.#startAt(this.#index); // loads the chunk at startTime; status PAUSED, nothing plays
+    } else {
+      this.#setStatus(Status.IDLE);
+    }
+  }
+
+  /** load() of the prepared session at the same chunk: keep the audio that is already there. */
+  #reusePrepared(sessionId, startIndex, voice) {
+    if (!this.#prepared || sessionId == null || this.#session?.sessionId !== sessionId || startIndex !== this.#index) {
+      return false;
+    }
+    this.#prepared = false;
+    if (voice !== undefined && !sameSelection(normalizeSelection(voice), this.#selection)) {
+      this.setVoice(voice); // restarts the chunk in the new voice; stays paused
+    } else {
+      this.#emit('stateChanged');
+    }
+    return true;
+  }
+
+  /** Forgets the session (e.g. a prepared chapter that was never started). Emits nothing. */
+  unload() {
+    this.#resetAudio();
+    this.#cache?.clear();
+    this.#cache = null;
+    this.#session = null;
+    this.#prepared = false;
+    this.#index = 0;
+    this.#startTime = 0;
+    this.#wantPlay = false;
+    this.#error = null;
+    this.#finished = false;
+    this.#status = Status.IDLE;
+  }
+
+  /**
+   * Cancels every prefetch and drops cached audio except a ready current chunk (the tab
+   * navigated away: this session should stop occupying the backend).
+   */
+  dropPrefetches() {
+    if (!this.#cache) return;
+    const other = this.#slots[1 - this.#active];
+    if (other.index != null && other.index !== this.#index) clearSlot(other);
+    this.#cache.clearExcept(this.#index);
   }
 
   /** Starts, resumes, or retries after an error. Restarts from the top after the session finished. */
@@ -138,10 +219,14 @@ export class Player {
         return;
       case Status.PAUSED: {
         this.#wantPlay = true;
+        this.#prepared = false;
         const slot = this.#slots[this.#active];
         if (slot.index === this.#index) {
           this.#playElement(slot.el, this.#gen);
           this.#setStatus(Status.PLAYING);
+          // Refill the window, in case prefetches were dropped while paused.
+          this.#cache.setCurrent(this.#index);
+          if (this.#slots[1 - this.#active].index == null) this.#preloadNext(this.#gen);
         } else {
           this.#setStatus(this.#waiting); // audio still on its way
         }
@@ -186,7 +271,11 @@ export class Player {
     this.#setStatus(Status.IDLE);
   }
 
-  /** Jumps to a chunk. Keeps playing if playing, stays paused if paused. */
+  /**
+   * Jumps to a chunk. Keeps playing if playing, stays paused if paused. The index and the
+   * highlight move at once (chunkSelected); audio that is not cached is requested only after
+   * seekDebounceMs without another seek.
+   */
   seekToChunk(index) {
     if (!this.#session) return;
     const target = clamp(index | 0, 0, this.#session.chunks.length - 1);
@@ -200,7 +289,25 @@ export class Player {
       return;
     }
     this.#wantPlay = this.#status !== Status.PAUSED;
-    void this.#startAt(target);
+    this.#prepared = false;
+    if (this.#seekDebounceMs === 0 || this.#cache.state(target) === 'ready') {
+      void this.#startAt(target); // cached: plays within microtasks
+    } else {
+      this.#resetAudio(); // stops the old chunk now; also cancels an earlier pending seek
+      this.#index = target;
+      this.#waiting = Status.LOADING;
+      this.#setStatus(this.#wantPlay ? Status.LOADING : Status.PAUSED);
+      this.#seekTimer = this.#timers.setTimeout(() => {
+        this.#seekTimer = null;
+        void this.#startAt(this.#index);
+      }, this.#seekDebounceMs);
+    }
+    this.#emitChunk('chunkSelected');
+  }
+
+  /** True while a debounced seek has not requested its audio yet. */
+  get seekPending() {
+    return this.#seekTimer != null;
   }
 
   next() {
@@ -310,6 +417,7 @@ export class Player {
       playbackRate: this.#rate,
       paragraphIndex: chunk?.paragraphIndex ?? null,
       finished: this.#finished, // the session played to its end
+      prepared: this.#prepared, // only warmed up (PREPARE_CHAPTER), not the session being read
     };
   }
 
@@ -348,8 +456,7 @@ export class Player {
     if (this.#wantPlay) {
       this.#playElement(slot.el, gen); // first, to keep the gap minimal
       this.#setStatus(Status.PLAYING);
-      const { index, paragraphIndexes, paragraphIndex, part, parts, startOffset, endOffset } = this.#session.chunks[this.#index];
-      this.#emit('chunkStarted', { index, paragraphIndexes, paragraphIndex, part, parts, startOffset, endOffset });
+      this.#emitChunk('chunkStarted');
     } else {
       this.#setStatus(Status.PAUSED);
     }
@@ -466,7 +573,16 @@ export class Player {
 
   #resetAudio() {
     this.#gen++;
+    if (this.#seekTimer != null) {
+      this.#timers.clearTimeout(this.#seekTimer);
+      this.#seekTimer = null;
+    }
     for (const slot of this.#slots) clearSlot(slot);
+  }
+
+  #emitChunk(type) {
+    const { index, paragraphIndexes, paragraphIndex, part, parts, startOffset, endOffset } = this.#session.chunks[this.#index];
+    this.#emit(type, { index, paragraphIndexes, paragraphIndex, part, parts, startOffset, endOffset });
   }
 
   #setStatus(status) {

@@ -17,6 +17,12 @@ import java.util.Locale;
  * other available providers are tried in config order, each with its own default voice.
  * Non-recoverable errors are rethrown immediately; if every attempt fails, the last
  * error is thrown. Never logs the text or any credentials.
+ *
+ * <p>Providers that are {@link TtsProvider#queued() queued} (Kokoro) run through the
+ * {@link TtsQueue}: one request at a time, the chunk a listener waits for first. The time a
+ * request waits there does not count toward the provider's timeout, so a Kokoro TIMEOUT still
+ * means slow generation and still falls back to the next provider. A request cancelled while
+ * queued ends with a {@link java.util.concurrent.CancellationException} and never falls back.
  */
 public class TtsService {
 
@@ -24,13 +30,20 @@ public class TtsService {
 
     private final List<TtsProvider> providers;
     private final boolean fallback;
+    private final TtsQueue queue;
 
+    /** Without a queue: every provider is called directly. */
     public TtsService(List<TtsProvider> providers, boolean fallback) {
+        this(providers, fallback, null);
+    }
+
+    public TtsService(List<TtsProvider> providers, boolean fallback, TtsQueue queue) {
         if (providers == null || providers.isEmpty()) {
             throw new IllegalArgumentException("At least one TTS provider is required (chapterly.providers)");
         }
         this.providers = List.copyOf(providers);
         this.fallback = fallback;
+        this.queue = queue;
     }
 
     /** Default provider and voice. */
@@ -43,6 +56,16 @@ public class TtsService {
      * @param voice        voice for that provider, or null for its default voice
      */
     public TtsResult synthesize(String text, String providerName, String voice) throws TtsException {
+        return synthesize(text, providerName, voice, TtsRequestOptions.DEFAULT);
+    }
+
+    /**
+     * @param options request id (for {@link #cancel}) and priority in the queue
+     * @throws java.util.concurrent.CancellationException if the request was cancelled while queued
+     */
+    public TtsResult synthesize(String text, String providerName, String voice, TtsRequestOptions options)
+            throws TtsException {
+        TtsRequestOptions opts = options == null ? TtsRequestOptions.DEFAULT : options;
         TtsProvider requested = resolve(providerName);
 
         List<TtsProvider> attempts = new ArrayList<>();
@@ -57,7 +80,7 @@ public class TtsService {
             String voiceToUse = isFallback || voice == null || voice.isBlank() ? provider.defaultVoice() : voice;
             long start = System.nanoTime();
             try {
-                byte[] audio = provider.synthesize(text, voiceToUse);
+                byte[] audio = call(provider, text, voiceToUse, opts);
                 log.info("TTS served by '{}' voice '{}'{} ({} chars -> {} bytes in {} ms)",
                         provider.name(), voiceToUse, isFallback ? " [fallback]" : "",
                         text.length(), audio.length, (System.nanoTime() - start) / 1_000_000);
@@ -74,6 +97,23 @@ public class TtsService {
             }
         }
         throw last;
+    }
+
+    /**
+     * Drops a request that is still waiting in the queue. Never fails; a request that already
+     * started runs to its end.
+     *
+     * @return true if a waiting request was removed
+     */
+    public boolean cancel(String requestId) {
+        return queue != null && queue.cancel(requestId);
+    }
+
+    private byte[] call(TtsProvider provider, String text, String voice, TtsRequestOptions opts) throws TtsException {
+        if (queue == null || !provider.queued()) {
+            return provider.synthesize(text, voice);
+        }
+        return queue.run(opts.requestId(), opts.priority(), () -> provider.synthesize(text, voice));
     }
 
     /** Every configured provider with its voices (empty for providers that are not available). */

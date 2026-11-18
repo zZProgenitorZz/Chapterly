@@ -179,3 +179,18 @@ test('two finish events at once navigate only once', async () => {
   assert.equal(b, 'started');
   assert.equal(tabs.updates.length, 1);
 });
+
+test('isNavigating(): true only while our own navigation to the next chapter runs', async () => {
+  const { flow, session, tabs } = setup({ autoNextChapter: true });
+  const seen = [];
+  // The service worker's tabs.onUpdated listener asks this on every URL change.
+  tabs.onUpdated.addListener((id, changeInfo) => {
+    if (changeInfo.status === 'loading') seen.push(flow.isNavigating(id));
+  });
+  assert.equal(flow.isNavigating(7), false);
+  const done = flow.onSessionFinished(session);
+  assert.equal(await done, 'started');
+  assert.deepEqual(seen, [true], 'the URL change during auto-next is ours');
+  assert.equal(flow.isNavigating(7), false, 'cleared afterwards');
+  assert.equal(flow.isNavigating(8), false);
+});

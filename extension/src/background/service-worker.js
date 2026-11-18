@@ -2,10 +2,18 @@
 // page injection, command routing, highlighting and the badge. Chrome can kill it at
 // any time, so it keeps nothing important in memory: the reading session and the
 // latest player snapshot live in chrome.storage.session (via session-store.js).
+//
+// Everything that may load or restore the player (popup and page commands, shortcuts,
+// "Read chapter", the popup's warm-up, tab navigation) runs through one serial queue, so
+// a burst of commands after a long pause restores the session once.
 
 import { chunkIndexForParagraph, chunkIndexForPosition, chunkParagraphs, splitIntoChunks } from '../shared/chunker.js';
-import { createChapterFlow } from './chapter-flow.js';
+import { createChapterFlow, originPattern } from './chapter-flow.js';
+import { contentScriptsPresent, ensureContentScripts } from './inject.js';
+import { isHttpUrl, isNavigationAway, isSessionFor, usablePrepared } from './navigation.js';
 import { CONTENT_SCRIPT_FILES } from '../content/extractors/registry.js';
+import { createAudioStore } from '../player/audio-store.js';
+import { createSerialQueue } from '../shared/serial.js';
 import { VOICE_KEYS, getSettings, getVoiceSelection, saveSettings, stepRate } from '../shared/settings.js';
 import {
   MessageType,
@@ -18,12 +26,15 @@ import {
 } from '../shared/messages.js';
 import {
   buildRestorePayload,
+  clearPreparedChapter,
   getActiveSession,
   getPlayerSnapshot,
+  getPreparedChapter,
   positions,
   resumeOffer,
   saveActiveSession,
   savePlayerSnapshot,
+  savePreparedChapter,
   toPlayerSession,
   updatePosition,
 } from '../shared/session-store.js';
@@ -38,11 +49,17 @@ const MIN_CHAPTER_CHARS = 500;
 const KEY_CHAPTER_STATUS = 'chapterStatus'; // chrome.storage.session: auto-next status for the popup
 const POSITION_SAVE_INTERVAL_MS = 5000;
 
+/**
+ * Commands that may load or restore the player run here one at a time. Functions called
+ * from inside a queued task (runCommand, startChapter, ...) must not queue again.
+ */
+const commandQueue = createSerialQueue();
+
 const chapterFlow = createChapterFlow({
   tabs: chrome.tabs,
   hasPermission: (origins) => chrome.permissions.contains({ origins }),
   extractChapter: (tabId) => extractChapter(tabId),
-  startChapter: (doc, tabId) => startChapter(doc, tabId),
+  startChapter: (doc, tabId) => commandQueue(() => startChapter(doc, tabId)),
   getSettings: () => getSettings(),
   getActiveSession: () => getActiveSession(),
   setStatus: (status) => setChapterStatus(status),
@@ -67,16 +84,43 @@ chrome.runtime.onInstalled.addListener(() => {
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   const run =
     info.menuItemId === MENU_READ_SELECTION
-      ? readFromContextMenu(info, tab)
+      ? commandQueue(() => readFromContextMenu(info, tab))
       : info.menuItemId === MENU_READ_FROM_HERE
-        ? readFromHere(tab)
+        ? commandQueue(() => readFromHere(tab))
         : null;
   run?.catch((err) => console.error('[chapterly] context menu', err));
 });
 
+// The reading tab moved to another page (the user navigated, not auto-next): stop the old
+// chapter from playing on and from keeping Kokoro busy with its prefetches.
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (!changeInfo.url) return;
+  if (chapterFlow.isNavigating(tabId)) return; // our own navigation to the next chapter
+  commandQueue(() => stopForNavigation(tabId, changeInfo.url)).catch((err) =>
+    console.error('[chapterly] tab navigation', err),
+  );
+});
+
+async function stopForNavigation(tabId, url) {
+  const session = await getActiveSession();
+  if (!isNavigationAway(session, tabId, url)) return;
+  if (await hasOffscreen()) {
+    const state = await toOffscreen(MessageType.PLAYER_GET_STATE);
+    if (state?.sessionId === session.sessionId && !state.prepared) {
+      await savePosition(session, state, { force: true }).catch(() => {});
+      await toOffscreen(MessageType.PLAYER_PAUSE);
+      await toOffscreen(MessageType.PLAYER_DROP_PREFETCH);
+    }
+  }
+  await setBadge('idle');
+}
+
 // Voice or speed changed in the popup or options page: apply it to the running player.
 // (Without an offscreen document, the next PLAYER_LOAD/restore reads the settings.)
 chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && 'apiToken' in changes) {
+    applyApiToken(changes.apiToken.newValue).catch((err) => console.error('[chapterly] token change', err));
+  }
   if (area !== 'sync') return;
   if (VOICE_KEYS.some((key) => key in changes)) {
     applyVoiceSelection().catch((err) => console.error('[chapterly] voice change', err));
@@ -89,6 +133,11 @@ chrome.storage.onChanged.addListener((changes, area) => {
 async function applyVoiceSelection() {
   if (!(await hasOffscreen())) return;
   await toOffscreen(MessageType.PLAYER_SET_VOICE, await getVoiceSelection());
+}
+
+async function applyApiToken(apiToken) {
+  if (!(await hasOffscreen())) return;
+  await toOffscreen(MessageType.PLAYER_SET_API_TOKEN, { apiToken: apiToken ?? '' });
 }
 
 async function applyPlaybackRate(rate) {
@@ -122,9 +171,13 @@ async function runShortcut(name) {
 listen(Target.BACKGROUND, async ({ type, payload }, sender) => {
   switch (type) {
     case MessageType.READ_SELECTION:
-      return readSelectionInTab(payload.tabId);
+      return commandQueue(() => readSelectionInTab(payload.tabId));
     case MessageType.READ_CHAPTER:
-      return readChapter(payload.tabId, payload);
+      return commandQueue(() => readChapter(payload.tabId, payload));
+    case MessageType.PREPARE_CHAPTER:
+      return commandQueue(() => prepareChapter(payload.tabId));
+    case MessageType.CLEAR_AUDIO_CACHE:
+      return clearAudioCache();
     case MessageType.NEXT_CHAPTER: {
       const session = await getActiveSession();
       return { ok: true, result: await chapterFlow.goToNext(session) };
@@ -172,16 +225,34 @@ async function ensureOffscreen() {
   await creatingOffscreen;
 }
 
-/** Recreated offscreen document = empty player: reload the session at currentIndex. */
-async function restoreSessionIfNeeded() {
-  const [state, session, snapshot, { backendUrl, provider, voice, playbackRate }] = await Promise.all([
-    toOffscreen(MessageType.PLAYER_GET_STATE),
+/**
+ * sessionId of the active session as this service worker last saw it. In memory only:
+ * after a restart it is null and the next command reads storage once.
+ */
+let knownActiveSessionId = null;
+
+/**
+ * Makes sure the offscreen player holds the active session. Fast path: one GET_STATE, and
+ * done if the player already has it. Otherwise (document recreated after a long pause, or a
+ * prepared chapter loaded) the session is restored once from storage.
+ */
+async function ensurePlayerSession() {
+  await ensureOffscreen();
+  const state = await toOffscreen(MessageType.PLAYER_GET_STATE);
+  if (state?.sessionId && !state.prepared && state.sessionId === knownActiveSessionId) return;
+  await restoreSessionIfNeeded(state);
+}
+
+/** Recreated offscreen document = empty player: reload the session where it was (paused if it was paused). */
+async function restoreSessionIfNeeded(state) {
+  const [session, snapshot, { backendUrl, apiToken, provider, voice, playbackRate }] = await Promise.all([
     getActiveSession(),
     getPlayerSnapshot(),
     getSettings(),
   ]);
+  knownActiveSessionId = session?.sessionId ?? null;
   const payload = buildRestorePayload(session, state, snapshot, backendUrl, { provider, voice }, playbackRate);
-  if (payload) await toOffscreen(MessageType.PLAYER_LOAD, payload);
+  if (payload) await toOffscreen(MessageType.PLAYER_LOAD, { ...payload, apiToken });
 }
 
 // ---------- starting sessions ----------
@@ -189,13 +260,16 @@ async function restoreSessionIfNeeded() {
 async function startSession(session, { startIndex = 0 } = {}) {
   const previous = await getActiveSession();
   await setChapterStatus(null);
+  await clearPreparedChapter(); // a new session drops any warmed-up chapter
   lastPositionSave = 0;
   const saved = await saveActiveSession({ ...session, currentIndex: startIndex, createdAt: Date.now() });
+  knownActiveSessionId = saved.sessionId;
   await ensureOffscreen();
-  const { backendUrl, provider, voice, playbackRate } = await getSettings();
+  const { backendUrl, apiToken, provider, voice, playbackRate } = await getSettings();
   await toOffscreen(MessageType.PLAYER_LOAD, {
     session: toPlayerSession(saved),
     backendUrl,
+    apiToken,
     voice: { provider, voice },
     playbackRate,
     startIndex,
@@ -229,33 +303,36 @@ async function sessionForSender(payload, sender) {
 }
 
 /** Page keyboard shortcut (src/content/page-controls.js). */
-async function handlePageCommand(payload, sender) {
-  if (!(await sessionForSender(payload, sender))) return { ok: false };
-  const commands = { next: PlayerCommand.NEXT, previous: PlayerCommand.PREVIOUS, toggle: PlayerCommand.TOGGLE };
-  const command = commands[payload.command];
-  if (!command) return { ok: false };
-  await handleCommand({ command });
-  return { ok: true };
+function handlePageCommand(payload, sender) {
+  return commandQueue(async () => {
+    if (!(await sessionForSender(payload, sender))) return { ok: false };
+    const commands = { next: PlayerCommand.NEXT, previous: PlayerCommand.PREVIOUS, toggle: PlayerCommand.TOGGLE };
+    const command = commands[payload.command];
+    if (!command) return { ok: false };
+    await runCommand({ command });
+    return { ok: true };
+  });
 }
 
 /** Click on a paragraph: jump to the chunk that contains the clicked word, keep/start playing. */
-async function handlePageSeek(payload, sender) {
-  const session = await sessionForSender(payload, sender);
-  if (!session || !Number.isInteger(payload.paragraphIndex)) return { ok: false };
-  const index = chunkIndexForPosition(session.chunks, payload.paragraphIndex, payload.offset);
-  if (index < 0) return { ok: false };
-  await ensureOffscreen();
-  await restoreSessionIfNeeded();
-  await toOffscreen(MessageType.PLAYER_SEEK, { index });
-  await toOffscreen(MessageType.PLAYER_PLAY);
-  return { ok: true, index };
+function handlePageSeek(payload, sender) {
+  return commandQueue(async () => {
+    const session = await sessionForSender(payload, sender);
+    if (!session || !Number.isInteger(payload.paragraphIndex)) return { ok: false };
+    const index = chunkIndexForPosition(session.chunks, payload.paragraphIndex, payload.offset);
+    if (index < 0) return { ok: false };
+    await ensurePlayerSession();
+    await toOffscreen(MessageType.PLAYER_SEEK, { index });
+    await toOffscreen(MessageType.PLAYER_PLAY);
+    return { ok: true, index };
+  });
 }
 
-/** Injects the content scripts and extracts the chapter: {ok, doc} or {ok: false, error}. */
+/** Injects the content scripts (unless already there) and extracts the chapter: {ok, doc} or {ok: false, error}. */
 async function extractChapter(tabId) {
   let doc;
   try {
-    await chrome.scripting.executeScript({ target: { tabId }, files: CONTENT_SCRIPT_FILES });
+    await ensureContentScripts(chrome.scripting, tabId, CONTENT_SCRIPT_FILES);
     const [injection] = await chrome.scripting.executeScript({
       target: { tabId },
       func: () => globalThis.ChapterlyContent.extract(),
@@ -271,44 +348,66 @@ async function extractChapter(tabId) {
   return { ok: true, doc };
 }
 
-/** Starts reading an extracted chapter, optionally from a paragraph. */
-async function startChapter(doc, tabId, { startParagraph = 0 } = {}) {
-  const chunks = chunkParagraphs(doc.paragraphs);
-  const startIndex = Math.max(0, chunkIndexForParagraph(chunks, startParagraph));
-  return startSession(
-    {
-      sessionId: crypto.randomUUID(),
-      kind: 'chapter',
-      tabId,
-      url: doc.url,
-      title: doc.title,
-      seriesTitle: doc.seriesTitle,
-      extractorId: doc.extractorId,
-      nextChapterUrl: doc.nextChapterUrl,
-      prevChapterUrl: doc.prevChapterUrl,
-      paragraphCount: doc.paragraphs.length,
-      chunks,
-    },
-    { startIndex },
-  );
+/** A chapter session (not saved) for an extracted chapter. */
+function chapterSession(doc, tabId, chunks = chunkParagraphs(doc.paragraphs), sessionId = crypto.randomUUID()) {
+  return {
+    sessionId,
+    kind: 'chapter',
+    tabId,
+    url: doc.url,
+    title: doc.title,
+    seriesTitle: doc.seriesTitle,
+    extractorId: doc.extractorId,
+    nextChapterUrl: doc.nextChapterUrl,
+    prevChapterUrl: doc.prevChapterUrl,
+    paragraphCount: doc.paragraphs.length,
+    chunks,
+  };
+}
+
+/**
+ * Starts reading an extracted chapter, optionally from a paragraph. With `prepared` (the
+ * session warmed up when the popup opened) its sessionId and chunks are reused, so the
+ * offscreen player keeps the audio it already has.
+ */
+async function startChapter(doc, tabId, { startParagraph = 0, prepared = null } = {}) {
+  const session = prepared ? chapterSession(doc, tabId, prepared.chunks, prepared.sessionId) : chapterSession(doc, tabId);
+  const startIndex = Math.max(0, chunkIndexForParagraph(session.chunks, startParagraph));
+  return startSession(session, { startIndex });
+}
+
+/** The chapter prepared for this tab, if it is fresh and the page still holds its marks. */
+async function takePrepared(tabId) {
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  const prepared = usablePrepared(await getPreparedChapter(), { tabId, url: tab?.url });
+  if (!prepared) return null;
+  // A reload since then wipes the content scripts and the paragraph marks used for highlighting.
+  return (await contentScriptsPresent(chrome.scripting, tabId)) ? prepared : null;
 }
 
 /**
  * "Read chapter". start: 'ask' (default) offers to resume a remembered position for
  * this exact URL instead of starting; 'resume' starts at paragraphIndex; 'top' from 0.
+ * A chapter prepared when the popup opened is reused instead of extracting again.
  */
 async function readChapter(tabId, { start = 'ask', paragraphIndex = 0 } = {}) {
   if (tabId == null) return { ok: false, error: 'NO_TAB' };
-  const extracted = await extractChapter(tabId);
-  if (!extracted.ok) return extracted;
-  const { doc } = extracted;
+  const prepared = await takePrepared(tabId);
+  let doc;
+  if (prepared) {
+    doc = prepared.doc;
+  } else {
+    const extracted = await extractChapter(tabId);
+    if (!extracted.ok) return extracted;
+    doc = extracted.doc;
+  }
 
   if (start === 'ask') {
     const offer = resumeOffer(await positions().findForUrl(doc.url), doc.paragraphs.length);
-    if (offer) return { ok: false, choice: offer, title: doc.title };
+    if (offer) return { ok: false, choice: offer, title: doc.title }; // the prepared chapter stays for the answer
   }
   const startParagraph = start === 'resume' ? Math.max(0, Number(paragraphIndex) || 0) : 0;
-  const session = await startChapter(doc, tabId, { startParagraph });
+  const session = await startChapter(doc, tabId, { startParagraph, prepared: prepared?.session });
   return {
     ok: true,
     title: session.title,
@@ -319,6 +418,49 @@ async function readChapter(tabId, { start = 'ask', paragraphIndex = 0 } = {}) {
     nextChapterUrl: session.nextChapterUrl,
     prevChapterUrl: session.prevChapterUrl,
   };
+}
+
+/**
+ * Popup opened on a page without a session for it: extract the chapter and warm up its
+ * first chunk (or the remembered one) so "Read chapter" starts at once. Only when the
+ * site permission is already granted (no user gesture here). Changes neither the active
+ * session nor the highlight; nothing plays.
+ */
+async function prepareChapter(tabId) {
+  if (tabId == null) return { ok: false, error: 'NO_TAB' };
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  if (!isHttpUrl(tab?.url)) return { ok: false, error: 'NOT_A_PAGE' };
+  const granted = await chrome.permissions.contains({ origins: [originPattern(tab.url)] }).catch(() => false);
+  if (!granted) return { ok: false, error: 'NO_PERMISSION' };
+  if (isSessionFor(await getActiveSession(), tabId, tab.url)) return { ok: false, error: 'ACTIVE_SESSION' };
+  if (await takePrepared(tabId)) return { ok: true, reused: true };
+
+  const extracted = await extractChapter(tabId);
+  if (!extracted.ok) return extracted;
+  const { doc } = extracted;
+  const session = chapterSession(doc, tabId);
+  const offer = resumeOffer(await positions().findForUrl(doc.url), doc.paragraphs.length);
+  const startIndex = offer ? Math.max(0, chunkIndexForParagraph(session.chunks, offer.paragraphIndex)) : 0;
+  await savePreparedChapter({ tabId, url: tab.url, preparedAt: Date.now(), doc, session, startIndex });
+
+  await ensureOffscreen();
+  const { backendUrl, apiToken, provider, voice, playbackRate } = await getSettings();
+  await toOffscreen(MessageType.PLAYER_PREPARE, {
+    session: toPlayerSession(session),
+    backendUrl,
+    apiToken,
+    voice: { provider, voice },
+    playbackRate,
+    startIndex,
+  });
+  return { ok: true, startIndex };
+}
+
+/** Settings > "Clear audio cache". */
+async function clearAudioCache() {
+  if (await hasOffscreen()) await toOffscreen(MessageType.PLAYER_CLEAR_AUDIO_CACHE);
+  else await createAudioStore().clear();
+  return { ok: true };
 }
 
 // ---------- chapter status (auto-next) and remembered positions ----------
@@ -335,7 +477,9 @@ async function getChapterStatus() {
 
 /** Player state (live or snapshot) plus the chapter status, for the popup. */
 async function currentState() {
-  const state = (await hasOffscreen()) ? await toOffscreen(MessageType.PLAYER_GET_STATE) : await getPlayerSnapshot();
+  let state = (await hasOffscreen()) ? await toOffscreen(MessageType.PLAYER_GET_STATE) : null;
+  // A prepared chapter is not what the popup should show: use the last real state.
+  if (!state || state.prepared || !state.sessionId) state = (await getPlayerSnapshot()) ?? state;
   return withChapterStatus(state);
 }
 
@@ -423,20 +567,24 @@ async function readFromHere(tab) {
   // (the paragraph itself may have been dropped as unspeakable).
   let index = session.chunks.findIndex((c) => c.paragraphIndexes.includes(paragraph));
   if (index < 0) index = Math.max(0, session.chunks.findLastIndex((c) => Math.min(...c.paragraphIndexes) <= paragraph));
-  await ensureOffscreen();
-  await restoreSessionIfNeeded();
+  await ensurePlayerSession();
   await toOffscreen(MessageType.PLAYER_SEEK, { index });
   await toOffscreen(MessageType.PLAYER_PLAY);
 }
 
 // ---------- commands from the popup ----------
 
-async function handleCommand({ command, index, rate }) {
-  if (command === PlayerCommand.GET_STATE) {
+/** Popup commands and shortcuts. GET_STATE answers at once; everything else is queued. */
+function handleCommand(payload) {
+  if (payload?.command === PlayerCommand.GET_STATE) {
     // Don't create a document just to read state; fall back to the snapshot.
     return currentState();
   }
+  return commandQueue(() => runCommand(payload));
+}
 
+/** Runs one player command. Only call from inside commandQueue. */
+async function runCommand({ command, index, rate }) {
   if (command === PlayerCommand.STOP && !(await hasOffscreen())) {
     // Nothing is playing; just reset the stored snapshot.
     const snapshot = await getPlayerSnapshot();
@@ -449,8 +597,7 @@ async function handleCommand({ command, index, rate }) {
     return getPlayerSnapshot();
   }
 
-  await ensureOffscreen();
-  await restoreSessionIfNeeded();
+  await ensurePlayerSession();
 
   switch (command) {
     case PlayerCommand.PLAY:
@@ -500,6 +647,8 @@ function handlePlayerEvent(payload) {
 
 async function processPlayerEvent({ event, data, state }) {
   if (!state) return { ok: true };
+  // A prepared (warmed-up, not started) chapter: no snapshot, badge, highlight or popup update.
+  if (state.prepared) return { ok: true };
   await savePlayerSnapshot(state);
 
   let session = null;
@@ -507,6 +656,7 @@ async function processPlayerEvent({ event, data, state }) {
 
   switch (event) {
     case 'chunkStarted':
+    case 'chunkSelected': // a seek, possibly while paused: the highlight moves either way
       if (session?.sessionId === state.sessionId) {
         await highlight(session, data ?? {});
         await savePosition(session, state).catch(() => {}); // throttled

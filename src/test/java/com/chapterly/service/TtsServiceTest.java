@@ -10,6 +10,9 @@ import org.junit.jupiter.params.provider.EnumSource;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -22,6 +25,7 @@ class TtsServiceTest {
         private final String defaultVoice;
         private final boolean available;
         private Reason failWith;
+        boolean queued;
         final List<String> calls = new ArrayList<>();
         int voicesCalls;
 
@@ -73,6 +77,16 @@ class TtsServiceTest {
         public List<Voice> voices() {
             voicesCalls++;
             return List.of(new Voice(defaultVoice, "Default", "en-US", "female"));
+        }
+
+        FakeProvider asQueued() {
+            this.queued = true;
+            return this;
+        }
+
+        @Override
+        public boolean queued() {
+            return queued;
         }
 
         @Override
@@ -232,5 +246,73 @@ class TtsServiceTest {
         assertThat(a.available()).isFalse();
         assertThat(a.voices()).isEmpty();
         assertThat(azure.voicesCalls).isZero();
+    }
+
+    // ---------- with the Kokoro queue ----------
+
+    @Test
+    void queuedProviderTimeoutStillFallsBackToAzure() throws TtsException {
+        FakeProvider kokoro = FakeProvider.kokoro().asQueued().failing(Reason.TIMEOUT);
+        FakeProvider azure = FakeProvider.azure();
+        TtsQueue queue = new TtsQueue(1);
+
+        TtsResult result = new TtsService(List.of(kokoro, azure), true, queue)
+                .synthesize("hi", "kokoro", null, new TtsRequestOptions("r1", TtsQueue.Priority.NOW));
+
+        assertThat(result.provider()).isEqualTo("azure");
+        assertThat(result.fallback()).isTrue();
+        assertThat(kokoro.calls).containsExactly("af_heart");
+        assertThat(queue.running()).isZero();
+    }
+
+    @Test
+    void aRequestCancelledBeforeItRanNeverFallsBack() {
+        FakeProvider kokoro = FakeProvider.kokoro().asQueued();
+        FakeProvider azure = FakeProvider.azure();
+        TtsService service = new TtsService(List.of(kokoro, azure), true, new TtsQueue(1));
+
+        assertThat(service.cancel("gone")).isFalse(); // not queued (yet): remembered
+        assertThatThrownBy(() -> service.synthesize("hi", null, null, new TtsRequestOptions("gone", TtsQueue.Priority.PREFETCH)))
+                .isInstanceOf(CancellationException.class);
+        assertThat(kokoro.calls).isEmpty();
+        assertThat(azure.calls).isEmpty();
+    }
+
+    @Test
+    void azureDoesNotWaitBehindABusyKokoroQueue() throws Exception {
+        FakeProvider kokoro = FakeProvider.kokoro().asQueued();
+        FakeProvider azure = FakeProvider.azure();
+        TtsQueue queue = new TtsQueue(1);
+        TtsService service = new TtsService(List.of(kokoro, azure), true, queue);
+
+        CountDownLatch release = new CountDownLatch(1);
+        Thread busy = Thread.ofVirtual().start(() -> {
+            try {
+                queue.run("busy", TtsQueue.Priority.NOW, () -> {
+                    try {
+                        release.await();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    return null;
+                });
+            } catch (Exception ignored) {
+                // test cleanup
+            }
+        });
+        while (queue.running() == 0) {
+            Thread.sleep(2);
+        }
+
+        TtsResult result = service.synthesize("hi", "azure", null, new TtsRequestOptions("a", TtsQueue.Priority.PREFETCH));
+        assertThat(result.provider()).isEqualTo("azure");
+
+        release.countDown();
+        busy.join(TimeUnit.SECONDS.toMillis(5));
+    }
+
+    @Test
+    void withoutAQueueCancelIsANoOp() {
+        assertThat(new TtsService(List.of(FakeProvider.kokoro()), true).cancel("x")).isFalse();
     }
 }

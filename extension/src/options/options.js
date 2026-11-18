@@ -1,8 +1,10 @@
-import { DEFAULTS, formatRate, getSettings, saveSettings } from '../shared/settings.js';
+import { DEFAULTS, formatRate, getApiToken, getSettings, saveApiToken, saveSettings } from '../shared/settings.js';
 import { positions } from '../shared/session-store.js';
 import { fetchSpeech, fetchVoices, toErrorInfo } from '../player/tts-client.js';
 import { describeError } from '../shared/error-messages.js';
 import { describeVoice, parseVoiceKey, renderVoiceOptions } from '../shared/voices.js';
+import { createAudioStore } from '../player/audio-store.js';
+import { MessageType, toBackground } from '../shared/messages.js';
 
 const SAMPLE = 'This is how chapters will sound with this voice.';
 
@@ -41,7 +43,7 @@ async function loadVoices() {
   voiceSelect.disabled = true;
   show(voiceMessage, 'Loading voices…', 'info');
   try {
-    catalog = await fetchVoices(settings.backendUrl);
+    catalog = await fetchVoices(settings.backendUrl, { apiToken: settings.apiToken });
     renderVoiceOptions(voiceSelect, catalog, selection);
     voiceSelect.disabled = false;
     previewButton.disabled = false;
@@ -73,8 +75,8 @@ previewButton.addEventListener('click', async () => {
   previewButton.disabled = true;
   show(voiceMessage, 'Generating preview…', 'info');
   try {
-    const { backendUrl } = await getSettings();
-    const result = await fetchSpeech(SAMPLE, { baseUrl: backendUrl, signal: previewAbort.signal, ...selection });
+    const { backendUrl, apiToken } = await getSettings();
+    const result = await fetchSpeech(SAMPLE, { baseUrl: backendUrl, apiToken, signal: previewAbort.signal, ...selection });
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     previewUrl = URL.createObjectURL(result.blob);
     previewAudio.src = previewUrl;
@@ -154,6 +156,48 @@ document.getElementById('forget-positions').addEventListener('click', async () =
   await showPositionCount();
 });
 
+const audioCacheMessage = document.getElementById('audio-cache-message');
+async function showAudioCacheUsage() {
+  try {
+    const { entries, bytes } = await createAudioStore().usage();
+    document.getElementById('audio-cache-info').textContent =
+      `Finished audio is kept on this computer, so resuming after a long pause, going back and reading a chapter ` +
+      `again need no new request. Now: ${entries} chunks, ${(bytes / (1024 * 1024)).toFixed(1)} MB of at most 150 MB.`;
+  } catch {
+    // Cache Storage unavailable: keep the static text
+  }
+}
+document.getElementById('clear-audio-cache').addEventListener('click', async () => {
+  try {
+    // Through the service worker, so a running player drops its in-memory index too.
+    await toBackground(MessageType.CLEAR_AUDIO_CACHE);
+    show(audioCacheMessage, 'Cleared', 'ok');
+  } catch (err) {
+    show(audioCacheMessage, String(err?.message ?? err), 'error');
+  }
+  await showAudioCacheUsage();
+});
+
+// ---------- API token (chrome.storage.local: a secret, never synced) ----------
+
+const tokenInput = document.getElementById('apiToken');
+const tokenMessage = document.getElementById('token-message');
+document.getElementById('token-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    const token = await saveApiToken(tokenInput.value);
+    tokenInput.value = token;
+    show(tokenMessage, token ? 'Saved' : 'Removed', 'ok');
+    await loadVoices(); // shows at once whether the backend accepts it
+  } catch (err) {
+    show(tokenMessage, err.message, 'error');
+  }
+});
+document.getElementById('token-show').addEventListener('change', (e) => {
+  tokenInput.type = e.target.checked ? 'text' : 'password';
+});
+void getApiToken().then((token) => (tokenInput.value = token));
+
 getSettings().then((s) => {
   input.value = s.backendUrl;
   renderSpeed(s.playbackRate);
@@ -162,3 +206,4 @@ getSettings().then((s) => {
 });
 void loadShortcuts();
 void showPositionCount();
+void showAudioCacheUsage();

@@ -37,13 +37,15 @@ export class FakeAudio extends EventTarget {
  */
 export function controllableFetch() {
   const requests = [];
-  const fetchSpeech = (text, { signal, provider: askedProvider, voice: askedVoice }) =>
+  const fetchSpeech = (text, { signal, provider: askedProvider, voice: askedVoice, requestId, priority }) =>
     new Promise((resolve, reject) => {
       const req = {
         text,
         signal,
         askedProvider,
         askedVoice,
+        requestId,
+        priority,
         settled: false,
         // Answers like the backend: the requested voice, or a fallback when given.
         resolve: (provider = askedProvider ?? 'azure', { voice = askedVoice ?? null, fallback = false } = {}) => {
@@ -78,6 +80,51 @@ export function fakeUrls() {
     },
     revokeObjectURL: (url) => live.delete(url),
   };
+}
+
+/** setTimeout/clearTimeout stand-in: timers run only when the test calls tick(). */
+export function manualTimers() {
+  let next = 1;
+  const pending = new Map();
+  return {
+    setTimeout: (fn, ms) => {
+      const id = next++;
+      pending.set(id, { fn, ms });
+      return id;
+    },
+    clearTimeout: (id) => pending.delete(id),
+    get size() {
+      return pending.size;
+    },
+    /** Runs every pending timer (they all count as elapsed). */
+    tick() {
+      const due = [...pending.entries()];
+      pending.clear();
+      for (const [, { fn }] of due) fn();
+    },
+  };
+}
+
+/** In-memory persistent audio store with the audio-store.js interface. */
+export function memoryAudioStore() {
+  const data = new Map();
+  const key = (selection, text) => JSON.stringify([selection?.provider ?? '', selection?.voice ?? '', text]);
+  const store = {
+    data,
+    gets: 0,
+    puts: [],
+    async get(selection, text) {
+      store.gets++;
+      return data.get(key(selection, text)) ?? null;
+    },
+    async put(selection, text, result) {
+      store.puts.push(text);
+      if (result.fallback) return false;
+      data.set(key(selection, text), { blob: result.blob, provider: result.provider, voice: result.voice ?? null, fallback: false });
+      return true;
+    },
+  };
+  return store;
 }
 
 /** Lets pending promise callbacks and 0 ms timers (retry delay in tests) run. */

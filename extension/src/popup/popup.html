@@ -7,27 +7,35 @@
   </head>
   <body>
     <header>
-      <h1>Chapterly</h1>
+      <div class="brand">
+        <span class="brand-mark"><img src="../../icons/icon48.png" alt="" width="18" height="18" /></span>
+        <h1>Chapterly</h1>
+      </div>
       <span id="status" class="pill" data-status="idle">Idle</span>
     </header>
 
-    <section class="now" aria-live="polite">
+    <section class="now card" aria-live="polite">
+      <p class="eyebrow">Now reading</p>
       <p id="title" class="title">Nothing loaded</p>
       <p class="meta">
+        <span id="series"></span>
         <span id="extractor"></span>
+      </p>
+      <div class="progress" aria-hidden="true"><span class="progress-fill"></span></div>
+      <p class="meta meta-row">
+        <span id="provider"></span>
         <span id="progress"></span>
       </p>
-      <p class="meta"><span id="provider"></span></p>
     </section>
 
-    <div id="error" class="error" role="alert" hidden>
+    <div id="error" class="error callout rose" role="alert" hidden>
       <strong id="error-text"></strong>
       <small id="error-detail"></small>
     </div>
-    <p id="notice" class="notice" hidden></p>
+    <p id="notice" class="notice callout amber" hidden></p>
 
     <!-- Remembered position for this chapter -->
-    <div id="resume" class="box" hidden>
+    <div id="resume" class="box callout" hidden>
       <p id="resume-text"></p>
       <div class="row">
         <button id="resume-yes" class="primary" type="button"></button>
@@ -36,7 +44,7 @@
     </div>
 
     <!-- End of chapter / auto-next status -->
-    <div id="chapter" class="box" hidden>
+    <div id="chapter" class="box callout" hidden>
       <p id="chapter-text"></p>
       <div class="row">
         <button id="next-chapter" class="primary" type="button" hidden>Next chapter</button>
@@ -49,31 +57,43 @@
       <button id="read" type="button">Read selection</button>
     </div>
 
-    <label class="voice" for="voice">
-      <span>Voice</span>
-      <select id="voice" disabled>
-        <option>Loading…</option>
-      </select>
-    </label>
-
-    <div class="speed" role="group" aria-label="Speed">
-      <span>Speed</span>
-      <button id="slower" type="button" title="Slower (−0.1x)" aria-label="Slower">−</button>
-      <button id="rate" type="button" class="rate" title="Click to reset to 1x">1x</button>
-      <button id="faster" type="button" title="Faster (+0.1x)" aria-label="Faster">+</button>
+    <div class="controls" role="group" aria-label="Playback">
+      <button id="stop" class="round small" type="button" title="Stop" aria-label="Stop" disabled>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1.5" /></svg>
+      </button>
+      <button id="previous" class="round" type="button" title="Previous (restart if more than 3 s in)" aria-label="Previous" disabled>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="3.5" width="2" height="9" rx="1" /><path d="M13 3.9v8.2a.6.6 0 0 1-.9.5L6 8.5a.6.6 0 0 1 0-1l6.1-4.1a.6.6 0 0 1 .9.5Z" /></svg>
+      </button>
+      <!-- Text (Play / Pause / Retry) is set by popup.js; CSS draws the matching icon. -->
+      <button id="toggle" class="play" type="button" data-action="play" disabled>Play</button>
+      <button id="next" class="round" type="button" title="Next paragraph part" aria-label="Next" disabled>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="11" y="3.5" width="2" height="9" rx="1" /><path d="M3 3.9v8.2a.6.6 0 0 0 .9.5L10 8.5a.6.6 0 0 0 0-1L3.9 3.4a.6.6 0 0 0-.9.5Z" /></svg>
+      </button>
+      <span class="controls-spacer" aria-hidden="true"></span>
     </div>
 
-    <div class="controls">
-      <button id="previous" type="button" title="Previous (restart if more than 3 s in)" aria-label="Previous" disabled>⏮</button>
-      <button id="toggle" type="button" disabled>Play</button>
-      <button id="next" type="button" title="Next paragraph part" aria-label="Next" disabled>⏭</button>
-      <button id="stop" type="button" title="Stop" aria-label="Stop" disabled>⏹</button>
-    </div>
+    <section class="settings card">
+      <label class="voice" for="voice">
+        <span>Voice</span>
+        <select id="voice" disabled>
+          <option>Loading…</option>
+        </select>
+      </label>
 
-    <label class="toggle-row">
-      <input id="auto-next" type="checkbox" />
-      <span>Continue with the next chapter</span>
-    </label>
+      <div class="speed" role="group" aria-label="Speed">
+        <span>Speed</span>
+        <div class="segmented">
+          <button id="slower" type="button" title="Slower (−0.1x)" aria-label="Slower">−</button>
+          <button id="rate" type="button" class="rate" title="Click to reset to 1x">1x</button>
+          <button id="faster" type="button" title="Faster (+0.1x)" aria-label="Faster">+</button>
+        </div>
+      </div>
+
+      <label class="toggle-row">
+        <span>Continue with the next chapter</span>
+        <input id="auto-next" class="switch" type="checkbox" />
+      </label>
+    </section>
 
     <footer>
       <small id="shortcuts" class="hint"></small>

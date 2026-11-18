@@ -11,6 +11,9 @@
 
 const KEY_ACTIVE = 'activeSession';
 const KEY_SNAPSHOT = 'playerSnapshot';
+// A chapter extracted and warmed up when the popup opened (PREPARE_CHAPTER), not started:
+// {tabId, url, preparedAt, doc, session, startIndex}. "Read chapter" on that page reuses it.
+const KEY_PREPARED = 'preparedChapter';
 
 /** @param {chrome.storage.StorageArea} area defaults to chrome.storage.session */
 export function createSessionStore(area) {
@@ -45,6 +48,10 @@ export function createSessionStore(area) {
 
     getPlayerSnapshot: () => read(KEY_SNAPSHOT),
     savePlayerSnapshot: (state) => area.set({ [KEY_SNAPSHOT]: state }),
+
+    getPreparedChapter: () => read(KEY_PREPARED),
+    savePreparedChapter: (prepared) => area.set({ [KEY_PREPARED]: prepared }),
+    clearPreparedChapter: () => area.set({ [KEY_PREPARED]: null }),
   };
 }
 
@@ -56,6 +63,9 @@ export const saveActiveSession = (session) => store().saveActiveSession(session)
 export const updatePosition = (sessionId, currentIndex) => store().updatePosition(sessionId, currentIndex);
 export const getPlayerSnapshot = () => store().getPlayerSnapshot();
 export const savePlayerSnapshot = (state) => store().savePlayerSnapshot(state);
+export const getPreparedChapter = () => store().getPreparedChapter();
+export const savePreparedChapter = (prepared) => store().savePreparedChapter(prepared);
+export const clearPreparedChapter = () => store().clearPreparedChapter();
 
 /** What the offscreen player needs from a stored session. */
 export function toPlayerSession(session) {
@@ -73,18 +83,28 @@ export function toPlayerSession(session) {
   };
 }
 
+const BUSY = new Set(['playing', 'loading', 'buffering']);
+
 /**
  * Decides whether the offscreen player must be reloaded (it was closed, e.g. after a
  * long pause) and from where. Returns the PLAYER_LOAD payload, or null if the player
  * already has this session. `voice` ({provider, voice}) is the current voice selection,
  * so a recreated offscreen document keeps reading with the chosen voice.
+ *
+ * The last snapshot decides how the player comes back:
+ * - paused  -> startPaused: the chunk is loaded at its position, status PAUSED, so play
+ *              continues from that spot and next/previous move while staying paused;
+ * - playing -> autoplay: the document was closed for another reason, so keep reading;
+ * - else    -> idle at currentIndex, as before.
  */
 export function buildRestorePayload(session, playerState, snapshot, backendUrl, voice = null, playbackRate = 1) {
   if (!session?.chunks?.length) return null;
-  if (playerState?.sessionId === session.sessionId) return null;
+  if (playerState?.sessionId === session.sessionId && !playerState.prepared) return null;
   const startIndex = Math.min(Math.max(0, session.currentIndex ?? 0), session.chunks.length - 1);
-  const samePlace =
-    snapshot?.sessionId === session.sessionId && snapshot.index === startIndex && snapshot.status === 'paused';
+  const status = snapshot?.sessionId === session.sessionId ? snapshot.status : null;
+  const startPaused = status === 'paused';
+  const autoplay = BUSY.has(status);
+  const samePlace = snapshot?.sessionId === session.sessionId && snapshot.index === startIndex && (startPaused || autoplay);
   return {
     session: toPlayerSession(session),
     backendUrl,
@@ -92,6 +112,8 @@ export function buildRestorePayload(session, playerState, snapshot, backendUrl, 
     playbackRate,
     startIndex,
     startTime: samePlace ? snapshot.position ?? 0 : 0,
+    startPaused,
+    autoplay,
   };
 }
 

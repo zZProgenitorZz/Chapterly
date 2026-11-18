@@ -3,6 +3,7 @@ package com.chapterly.provider;
 import com.chapterly.config.KokoroProperties;
 import com.chapterly.error.TtsException;
 import com.chapterly.error.TtsException.Reason;
+import com.chapterly.service.TtsQueue;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
@@ -66,7 +67,7 @@ class KokoroTtsProviderTest {
     }
 
     private KokoroTtsProvider provider(String url, Duration timeout, Clock clock) {
-        return new KokoroTtsProvider(new KokoroProperties(url, "af_heart", "kokoro", timeout, FALLBACK), JSON, clock);
+        return new KokoroTtsProvider(new KokoroProperties(url, "af_heart", "kokoro", timeout, FALLBACK, 1), JSON, clock);
     }
 
     private KokoroTtsProvider provider() {
@@ -194,6 +195,41 @@ class KokoroTtsProviderTest {
         });
         assertThatThrownBy(() -> provider(baseUrl, Duration.ofMillis(300), Clock.systemUTC()).synthesize("Hi", null))
                 .extracting(KokoroTtsProviderTest::reasonOf).isEqualTo(Reason.TIMEOUT);
+    }
+
+    @Test
+    void timeInTheQueueDoesNotCountTowardTheTimeout() throws Exception {
+        // Each request takes 400 ms; the timeout is 700 ms. The second request waits about
+        // 400 ms in the queue first, 800 ms in total, and must still succeed.
+        speech.set(ex -> {
+            try {
+                Thread.sleep(400);
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+            reply(200, "audio/mpeg", MP3).respond(ex);
+        });
+        KokoroTtsProvider kokoro = provider(baseUrl, Duration.ofMillis(700), Clock.systemUTC());
+        assertThat(kokoro.queued()).isTrue();
+        TtsQueue queue = new TtsQueue(1);
+
+        java.util.concurrent.CompletableFuture<byte[]> first = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+            try {
+                return queue.run("a", TtsQueue.Priority.NOW, () -> kokoro.synthesize("one", null));
+            } catch (TtsException e) {
+                throw new RuntimeException(e);
+            }
+        });
+        while (queue.running() == 0) {
+            Thread.sleep(2);
+        }
+        long start = System.nanoTime();
+        byte[] second = queue.run("b", TtsQueue.Priority.NOW, () -> kokoro.synthesize("two", null));
+        long totalMs = (System.nanoTime() - start) / 1_000_000;
+
+        assertThat(second).isEqualTo(MP3);
+        assertThat(first.get()).isEqualTo(MP3);
+        assertThat(totalMs).isGreaterThan(700);
     }
 
     @Test

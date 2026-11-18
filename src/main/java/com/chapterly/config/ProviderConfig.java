@@ -1,6 +1,7 @@
 package com.chapterly.config;
 
 import com.chapterly.provider.TtsProvider;
+import com.chapterly.service.TtsQueue;
 import com.chapterly.service.TtsService;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -17,8 +18,14 @@ import java.util.stream.Collectors;
 @Configuration
 public class ProviderConfig {
 
+    /** Queue for local engines (Kokoro): chapterly.kokoro.max-concurrent at a time. */
     @Bean
-    public TtsService ttsService(ChapterlyProperties props, List<TtsProvider> available) {
+    public TtsQueue ttsQueue(KokoroProperties kokoro) {
+        return new TtsQueue(kokoro.maxConcurrent());
+    }
+
+    @Bean
+    public TtsService ttsService(ChapterlyProperties props, List<TtsProvider> available, TtsQueue ttsQueue) {
         Map<String, TtsProvider> byName = available.stream()
                 .collect(Collectors.toMap(TtsProvider::name, Function.identity()));
 
@@ -33,6 +40,6 @@ public class ProviderConfig {
                 })
                 .toList();
 
-        return new TtsService(ordered, props.fallback());
+        return new TtsService(ordered, props.fallback(), ttsQueue);
     }
 }

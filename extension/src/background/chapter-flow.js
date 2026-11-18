@@ -54,6 +54,7 @@ const stripHash = (url) => String(url ?? '').split('#')[0];
 export function createChapterFlow(deps) {
   const timeoutMs = deps.timeoutMs ?? NEXT_CHAPTER_TIMEOUT_MS;
   let running = null; // one navigation at a time
+  let navigatingTabId = null; // set while our own tabs.update() is loading the next chapter
 
   /** Resolves 'complete' | 'timeout' | 'removed' for the tab's next finished load. */
   function waitForLoad(tabId) {
@@ -90,6 +91,7 @@ export function createChapterFlow(deps) {
     if (running) return running;
     running = run(session).finally(() => {
       running = null;
+      navigatingTabId = null;
     });
     return running;
   }
@@ -111,6 +113,7 @@ export function createChapterFlow(deps) {
     await deps.setBadge('next');
 
     const loaded = waitForLoad(session.tabId); // listen before navigating
+    navigatingTabId = session.tabId; // our own navigation: the service worker must not stop the session
     try {
       await deps.tabs.update(session.tabId, { url });
     } catch {
@@ -143,5 +146,10 @@ export function createChapterFlow(deps) {
     return decision === 'offer' ? 'offered' : 'stopped';
   }
 
-  return { goToNext, onSessionFinished, decideAfterFinish };
+  /** True while goToNext() is navigating this tab (tabs.onUpdated events are ours). */
+  function isNavigating(tabId) {
+    return navigatingTabId != null && navigatingTabId === tabId;
+  }
+
+  return { goToNext, onSessionFinished, decideAfterFinish, isNavigating };
 }

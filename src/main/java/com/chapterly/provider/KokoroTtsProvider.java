@@ -79,6 +79,12 @@ public class KokoroTtsProvider implements TtsProvider {
         return "Kokoro (local)";
     }
 
+    /** One local engine: requests go through the TtsQueue (chapterly.kokoro.max-concurrent). */
+    @Override
+    public boolean queued() {
+        return true;
+    }
+
     /** Always offered; a server that is down is a runtime error (UNAVAILABLE). */
     @Override
     public boolean isAvailable() {

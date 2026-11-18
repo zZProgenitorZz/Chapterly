@@ -21,11 +21,19 @@ chapterly:
     - azure
   # Try the other providers when the requested one is down, times out or is out of quota.
   fallback: true
+  # Optional shared token. When set, every /api/** request must send it in the
+  # X-Chapterly-Token header (else 401). Set it whenever the backend is reachable from
+  # other machines (e.g. over Tailscale). Empty = open API.
+  api-token: ${CHAPTERLY_API_TOKEN:}
   kokoro:
     base-url: ${KOKORO_BASE_URL:http://localhost:8880}
     default-voice: af_heart
     model: kokoro
     timeout: 30s
+    # Kokoro requests that run at once; the rest wait in a queue where the chunk the
+    # listener is waiting for ("now") goes before prefetches. Time in the queue does not
+    # count toward the timeout above.
+    max-concurrent: 1
     # Offered when the Kokoro server's voice list can't be fetched.
     fallback-voices:
       - af_heart

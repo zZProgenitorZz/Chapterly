@@ -21,11 +21,22 @@ export const MessageType = Object.freeze({
   PLAYER_EVENT: 'PLAYER_EVENT', // offscreen player event: {event, data, state}
   PAGE_COMMAND: 'PAGE_COMMAND', // page keyboard shortcut: {url, command: 'next' | 'previous' | 'toggle'}
   PAGE_SEEK: 'PAGE_SEEK', // page click: {url, paragraphIndex, offset}
+  // popup opened on a page without a session: extract and warm up chunk 0 (or the
+  // remembered chunk) without playing, if the site permission is granted: {tabId}
+  PREPARE_CHAPTER: 'PREPARE_CHAPTER',
+  CLEAR_AUDIO_CACHE: 'CLEAR_AUDIO_CACHE', // options page: delete the persistent audio cache
 
   // -> offscreen
-  // {session, backendUrl, voice: {provider, voice}, playbackRate, startIndex?, startTime?}
+  // {session, backendUrl, apiToken, voice: {provider, voice}, playbackRate, startIndex?, startTime?,
+  //  startPaused?, autoplay?}
   PLAYER_LOAD: 'PLAYER_LOAD',
+  // like PLAYER_LOAD, but only warms up: loads the session PAUSED (marked prepared) if the
+  // player is not busy, else only fetches that chunk into the persistent audio cache
+  PLAYER_PREPARE: 'PLAYER_PREPARE',
+  PLAYER_DROP_PREFETCH: 'PLAYER_DROP_PREFETCH', // cancel prefetches, keep a ready current chunk
+  PLAYER_CLEAR_AUDIO_CACHE: 'PLAYER_CLEAR_AUDIO_CACHE',
   PLAYER_SET_VOICE: 'PLAYER_SET_VOICE', // {provider, voice}
+  PLAYER_SET_API_TOKEN: 'PLAYER_SET_API_TOKEN', // {apiToken}: changed in Settings
   PLAYER_PLAY: 'PLAYER_PLAY',
   PLAYER_PAUSE: 'PLAYER_PAUSE',
   PLAYER_RESUME: 'PLAYER_RESUME',

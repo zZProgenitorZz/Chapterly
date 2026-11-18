@@ -1,4 +1,6 @@
 // User settings stored in chrome.storage.sync. Keep every setting in DEFAULTS.
+// Exception: the API token is a secret and stays on this device (chrome.storage.local);
+// getSettings() still returns it as apiToken.
 // The content script (src/content/page-controls.js) reads arrowKeysControl and
 // clickToJump directly and duplicates their defaults.
 
@@ -59,8 +61,33 @@ export function normalizeVoiceSelection({ provider, voice } = {}) {
 }
 
 export async function getSettings() {
-  const stored = await chrome.storage.sync.get(DEFAULTS);
-  return { ...DEFAULTS, ...stored };
+  const [stored, apiToken] = await Promise.all([chrome.storage.sync.get(DEFAULTS), getApiToken()]);
+  return { ...DEFAULTS, ...stored, apiToken };
+}
+
+const KEY_API_TOKEN = 'apiToken';
+
+/** Trims; rejects characters that can't go into an HTTP header. '' = no token. */
+export function normalizeApiToken(input) {
+  const token = String(input ?? '').trim();
+  if (token && !/^[!-~]+$/.test(token)) {
+    throw new Error('The API token may only contain printable ASCII characters without spaces');
+  }
+  return token;
+}
+
+/** The backend's shared token (CHAPTERLY_API_TOKEN), or '' if none is set. Never synced. */
+export async function getApiToken() {
+  const local = globalThis.chrome?.storage?.local;
+  if (!local) return '';
+  const stored = await local.get(KEY_API_TOKEN);
+  return typeof stored?.[KEY_API_TOKEN] === 'string' ? stored[KEY_API_TOKEN] : '';
+}
+
+export async function saveApiToken(input) {
+  const token = normalizeApiToken(input);
+  await chrome.storage.local.set({ [KEY_API_TOKEN]: token });
+  return token;
 }
 
 /** The voice the backend should try first: {provider, voice}. */

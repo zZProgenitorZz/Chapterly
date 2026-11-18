@@ -16,6 +16,12 @@ The first time you click **Read chapter** on a site, Chrome asks for permission 
 
 To change the backend URL, open the popup and click **Settings**. The default is `http://localhost:8080`.
 
+**Backend on another machine** (for example over Tailscale, see the [root README](../README.md#run-with-docker)): set the backend URL to that machine's address, such as `http://100.101.102.103:8080`, and enter the backend's `CHAPTERLY_API_TOKEN` under **Settings → API token**.
+- The token is sent as `X-Chapterly-Token` with every request (speech, voice list, cancel). It's stored in `chrome.storage.local` on this computer only, never synced.
+- Leave it empty for a local backend without a token.
+- A missing or wrong token shows "The backend requires an API token…" or "The backend rejected the API token…" in the popup and in Settings, instead of a generic error. Saving the token reloads the voice list, so you see right away whether it's accepted.
+- The extension has host permission only for `localhost:8080` and `127.0.0.1:8080`. Other addresses work through the backend's CORS settings, which allow every extension origin.
+
 ## Controls while reading
 
 Reading works much like Microsoft Edge's Read Aloud. Every chunk is one paragraph. A long paragraph (over 600 characters) is read in parts, split on sentence boundaries, and the part being read gets an extra highlight.
@@ -36,7 +42,9 @@ Reading works much like Microsoft Edge's Read Aloud. Every chunk is one paragrap
 
 **Page keys** (`←`, `→`, `k`) only work on the page of the chapter being read, and only while "Arrow keys control reading" is on (the default). They're ignored while you type in a field or hold a modifier key. Space is left alone so it still scrolls the page. Some novel sites use the arrow keys for their own chapter navigation; while a chapter is being read, Chapterly takes those keys.
 
-**Skipping is instant** whenever the target is already prefetched, which is usual, because the player keeps about 1500 characters (up to 6 chunks) requested ahead. Pressing next several times quickly never overlaps audio or plays a stale chunk.
+**Skipping is instant** whenever the target is already in memory, which is usual: the player keeps about 1500 characters (up to 6 chunks) requested ahead and the last 5 chunks behind (see [Prefetch and the audio cache](#prefetch-and-the-audio-cache)). Pressing next or previous several times quickly never overlaps audio or plays a stale chunk:
+- **The highlight moves at once** with every press, also while paused.
+- **Audio is requested once.** A target that isn't cached is only requested after 200 ms without another press, so five quick presses of ⏮ ask the backend for one chunk, not five. A cached target plays immediately, with no delay.
 
 ### Click to jump
 
@@ -64,6 +72,15 @@ Speed ranges from 0.75x to 2.5x in steps of 0.1x. You can change it in the popup
 - **When off:** reading stops, the badge shows `✓`, and the popup shows "Chapter finished" with a **Next chapter** button that runs the same steps once.
 - **Site permission:** automatic continuation needs Chapterly's access to that site. That's the per-site permission the popup asks for the first time you click **Read chapter**. Without it, the popup says "Allow Chapterly on this site to continue automatically" and offers an **Allow on this site** button.
 - **If you moved on** (navigated the tab elsewhere or closed it), nothing happens. If the next page has no chapter text, reading stops with a notice.
+
+### Moving to another page yourself
+
+When the tab of the chapter being read goes to another page (you clicked the site's "Next" link, typed a URL, went back), Chapterly pauses reading, saves the position, cancels every prefetch (only a current chunk that is already loaded is kept) and sets the badge back to idle. The old chapter no longer plays on or keeps Kokoro busy. A change of only the `#hash` isn't a new page, and the automatic "Continue with the next chapter" navigation is not affected.
+
+**Warm start:** when you open the popup on a web page that isn't the one being read, and Chapterly already has permission for that site, the service worker quietly extracts the chapter and fetches its first chunk (or the chunk of your remembered position) without playing anything. **Read chapter** then reuses that work and starts almost at once.
+- Nothing changes until you press **Read chapter**: the session being read, its highlight, the popup and the badge stay as they were. If something is playing, it keeps playing; the first chunk is only fetched into the audio cache.
+- The prepared chapter is dropped after 2 minutes, when another session starts, or when the page reloads.
+- Without the site permission nothing is prepared (the permission prompt needs your click on **Read chapter**).
 
 ### Remembered positions
 
@@ -119,24 +136,40 @@ popup ──READ_CHAPTER / READ_SELECTION / PLAYER_COMMAND──▶ service work
 | Offscreen document | `src/offscreen/*` | Owns playback with two `<audio>` elements. It fetches audio itself; audio never passes through runtime messaging. |
 | Player | `src/player/player.js` | Plays a session. See the list below. |
 | AudioCache | `src/player/audio-cache.js` | Prefetching. See the list below. |
-| TTS client | `src/player/tts-client.js` | `fetchSpeech(text, {baseUrl, signal, provider, voice})` returns `{blob, provider, voice, fallback}`, read from the `X-TTS-*` headers. `fetchVoices(baseUrl)` gets the voice list. Errors are typed and include the provider from the error body. The client timeout is 45 seconds, above the backend's 30-second Kokoro timeout. |
+| TTS client | `src/player/tts-client.js` | `fetchSpeech(text, {baseUrl, signal, provider, voice, requestId, priority})` returns `{blob, provider, voice, fallback}`, read from the `X-TTS-*` headers. `requestId` and `priority` (`now` or `prefetch`) go out as `X-Chapterly-Request-Id` and `X-Chapterly-Priority`; when `signal` aborts, it also sends `DELETE /api/tts/requests/{requestId}` (fire-and-forget) so the backend drops the request if it is still queued. `fetchVoices(baseUrl)` gets the voice list. Errors are typed and include the provider from the error body. The client timeout is 45 seconds, above the backend's 30-second Kokoro timeout. |
+| Audio store | `src/player/audio-store.js` | The persistent audio cache (Cache Storage). See [Prefetch and the audio cache](#prefetch-and-the-audio-cache). |
 | Voices | `src/shared/voices.js`, `src/shared/error-messages.js` | Builds the grouped voice `<select>` and the "Voice: …" line, and turns errors into text that names the provider (for example "Kokoro is not running. Start the Kokoro server on localhost:8880."). |
-| Popup, options | `src/popup/*`, `src/options/*` | The UI and the backend URL setting. |
+| Popup, options | `src/popup/*`, `src/options/*` | The UI and the backend URL setting. Both use `src/shared/theme.css` (dark only: colour tokens, cards, pill buttons, the toggle switch) with Inter and Inter Tight bundled in `fonts/` (SIL OFL, `fonts/OFL.txt`), so no font is fetched from the network. |
 
 **Service worker:**
 - Context menus, offscreen document lifecycle (`ensureOffscreen()`), page injection, command routing, page highlight and the badge.
 - Badge: `▶` while playing, `!` on error, `✓` when the chapter is finished.
+- Popup and page commands, shortcuts, "Read chapter", "read from here", the warm start and tab navigation all run through **one serial queue**, so a burst of commands after a long pause restores the session once. When the offscreen player already holds the active session, a command costs one `GET_STATE` and no storage reads.
+- Content scripts are injected only if `ChapterlyContent.extract` isn't in the tab yet (a small probe script checks first).
+- It highlights on `chunkStarted` and on `chunkSelected` (a seek, also while paused).
 
 **Player:**
-- `load({sessionId, title, chunks, startIndex, startTime})`.
-- Commands: `play`, `pause`, `stop`, `seekToChunk`, `next`, `previous`, `nextParagraph`, `previousParagraph`, `setVoice`. `previous` restarts the current chunk if you're more than 3 seconds in; otherwise it goes back one chunk.
+- `load({sessionId, title, chunks, startIndex, startTime, paused, prepared})`. `paused` loads the chunk at `startTime` without playing (status `paused`); `prepared` does the same for a warm start, and a later `load()` of that session at that chunk keeps the audio.
+- Commands: `play`, `pause`, `stop`, `seekToChunk`, `next`, `previous`, `nextParagraph`, `previousParagraph`, `setVoice`, `dropPrefetches`, `unload`. `previous` restarts the current chunk if you're more than 3 seconds in; otherwise it goes back one chunk.
+- Seeks emit `chunkSelected` at once and request uncached audio after 200 ms without another seek.
 - `playbackRate` is a field, defaulting to 1, and applies to both audio elements.
 - States: `idle`, `loading`, `buffering`, `playing`, `paused`, `error`.
 
-**AudioCache:**
-- Keeps chunks requested ahead of the current one until at least 1500 characters or 6 chunks are queued, whichever comes first, with at most 2 requests in flight.
-- Retries a failed request once after 1 second.
-- Aborts requests that a seek made unnecessary, and revokes object URLs for chunks more than 1 behind.
+### Prefetch and the audio cache
+
+**AudioCache** (`src/player/audio-cache.js`), one per session, in memory:
+- **The current chunk is urgent.** It is requested at once with priority `now`, whatever else is in flight.
+- **Prefetches wait for it.** Only once the current chunk is ready are the chunks ahead requested, with priority `prefetch`, closest first and one at a time, until at least 1500 characters or 6 chunks are queued ahead. One at a time keeps up easily: a GPU Kokoro chunk takes about a second, playing it much longer. After a seek, all capacity goes to the chunk you're waiting for.
+- **Back buffer.** Ready chunks behind the current one are kept: the previous chunk always, then back to 5 chunks as long as they add up to at most 2000 characters. Going back a few chunks needs no request.
+- **Ahead after a backward seek.** Ready chunks just past the new window, up to 3 beyond it, are kept too.
+- **Aborting.** A request still loading is aborted only if it is more than 3 chunks outside the new window; a nearer one finishes, because it'll be needed shortly. Every abort also tells the backend to drop the request (see [the Kokoro queue](../README.md#the-kokoro-queue)), so Kokoro doesn't spend time on audio nobody wants.
+- Retries a failed request once after 1 second, with a new request id.
+
+**Persistent audio cache** (`src/player/audio-store.js`): finished MP3s are also stored with the Cache Storage API (`caches.open('chapterly-audio-v1')`), which works in the offscreen document and outlives it.
+- **Key:** a synthetic URL `https://chapterly.cache/<sha256>` of the requested provider, voice and text. Audio from a fallback provider is never stored, so you still get your chosen voice later.
+- **Use:** the AudioCache looks a chunk up there before requesting it, and writes each fetched chunk there without making playback wait. Resuming after a long pause, going back further and reading a chapter again are instant.
+- **Size:** an LRU index lives in the same cache; above 150 MB the least recently used chunks are deleted. An MP3 chunk is about 30–150 KB.
+- **Settings → Clear audio cache** deletes it all (the options page also shows how much is stored).
 
 ### Reading a chapter
 
@@ -153,7 +186,10 @@ popup ──READ_CHAPTER / READ_SELECTION / PLAYER_COMMAND──▶ service work
    - stores `currentIndex`,
    - sends `HIGHLIGHT {paragraphIndexes}` to the tab, which highlights those paragraphs and scrolls them into view only if they're off screen.
    - On `sessionFinished`, it logs the event and sets the badge to `✓`. This is the hook for auto-next-chapter later.
-7. **Long pauses.** Chrome closes the offscreen document after about 30 seconds without audio. When you press play again, the service worker recreates it and reloads the stored session at `currentIndex`, from the paused position if it has one.
+7. **Long pauses.** Chrome closes the offscreen document after about 30 seconds without audio, and its in-memory audio with it. On the next command the service worker recreates it and reloads the stored session at `currentIndex`, once, however many commands arrive:
+   - **Paused before:** the player comes back **paused** at the same spot (the chunk comes from the persistent audio cache, at the stored position). Play continues from there; next/previous/click move the highlight and stay paused, as they would have before the pause.
+   - **Playing before** (the document closed for another reason): it is restored and keeps playing.
+   - Otherwise it comes back idle at `currentIndex`, as before.
 8. **Read from here.** While a chapter session is active, right-clicking a paragraph and choosing **Chapterly: read from here** jumps to the chunk that contains that paragraph.
 
 ### Cleaning (`src/content/cleaning.js`)
@@ -207,9 +243,13 @@ Test files:
 
   The content scripts are evaluated in jsdom in the same order they are injected. jsdom's `getComputedStyle` only sees inline styles and `<style>` tags, so the hidden fixture text uses `<style>` classes.
 - `chunker.test.js`: one chunk per paragraph (dialogue lines stay separate), sentence splitting with parts and offsets, the first-chunk limit, the backend limit, and the position and paragraph lookups.
-- `audio-cache.test.js`: the fixed and size-based prefetch windows, the in-flight limit, abort on seek, URL revocation and retry. Uses a mock fetch.
+- `audio-cache.test.js`: the fixed and size-based prefetch windows; the current chunk first at priority `now` (also with a prefetch in flight); prefetches waiting for it and running one at a time; the back buffer (5 chunks or 2000 characters) and the kept chunks after a backward seek; aborting only far requests; retry with a new request id; the persistent store (hit, write, fallback not stored, failures ignored). Uses a mock fetch.
+- `audio-store.test.js`: the persistent audio cache on a fake Cache Storage: keys, put/get, no fallback audio, LRU eviction above the limit, the index across instances and its rebuild, clear.
+- `tts-client-cancel.test.js`: the `X-Chapterly-*` headers, the `DELETE` on abort (and none without an id or after the response), errors of the `DELETE` ignored.
+- `background-helpers.test.js`: the serial command queue (order, errors, one restore for a burst of commands), injecting content scripts only when missing, tab-navigation and prepared-chapter decisions.
 - `page-controls.test.js`: key handling (ignored without a session, with the setting off, with modifiers, and in inputs) and click rules (links, buttons, selection, double click). Also click-offset-to-chunk mapping on the fixtures, including `<br>`-separated text with hidden spans, and sentence ranges.
 - `chapter-flow.test.js`: auto-next with fake `chrome.tabs`. Covers:
+  - `isNavigating()` is true only during auto-next's own navigation (so the tab-navigation stop ignores it);
   - setting off stops at the end; a toggle during the chapter is respected;
   - the manual "Next chapter" button;
   - no permission, a tab that moved on or was closed, no chapter text, load timeout, a superseded session, and double triggers.
@@ -218,10 +258,13 @@ Test files:
   - the error after a retry, naming the chunk;
   - next/previous/stop with no stray audio, and `playbackRate`;
   - `setVoice`: the cache is cleared, the current chunk restarts in the new voice, paused stays paused, and late responses in the old voice are ignored.
-- `session-store.test.js`: `updatePosition`, and restoring after the offscreen document was closed, including the voice.
+  - seeks: five quick `previous()` calls request only the final chunk, the highlight (`chunkSelected`) moves with every press and while paused, a cached target plays at once, going back 3 chunks after playing forward needs no request, `stop()` cancels a pending seek;
+  - restoring paused at the stored position (also from the persistent store), prepared sessions reused by `load()`, `dropPrefetches()`.
+- `session-store.test.js`: `updatePosition`, and restoring after the offscreen document was closed, including the voice, paused vs. playing snapshots, a prepared chapter in the player, and the prepared-chapter record.
 - `tts-client.test.js`: sends the provider and voice, reads the new headers, and covers `fetchVoices` (the happy path and typed errors).
 - `settings.test.js`: the new defaults (Kokoro, `af_heart`) and voice validation.
 - `error-messages.test.js`: error texts that name the provider.
+- `api-token.test.js`: the token in `chrome.storage.local` (not sync) and its validation, the `X-Chapterly-Token` header on speech, voice-list and cancel requests (also the cancel sent on abort), none without a token, and the 401 messages.
 - `voices.test.js`: the voice `<select>` grouping and the "Voice: …" line.
 
 ### Manual test checklist
@@ -237,7 +280,7 @@ Run these with the backend running at `http://localhost:8080`.
   - There are no audible gaps between chunks.
 - [ ] **A site handled by the generic extractor** (for example a WordPress translation blog): the popup shows `generic`. Only the chapter is read, without the nav links, translator notes or comments.
 - [ ] **A page that isn't a chapter** (for example a search page): the popup shows "No chapter text found on this page".
-- [ ] **Pause for more than a minute, then play:** reading resumes at the same chunk.
+- [ ] **Pause for more than a minute, then play:** reading resumes at the same spot within the chunk, without a noticeable wait. ⏭/⏮ after a long pause move the highlight and stay paused.
 - [ ] **⏭ / ⏮ / ⏹ while the next chunk is still loading:** reading lands on the right chunk, and there's no stray or overlapping audio. ⏹ clears the highlight.
 - [ ] **Read from here:** right-click a paragraph further down and choose **Chapterly: read from here**.
 - [ ] **End of chapter:** the badge shows `✓`, and the service worker console logs "session finished" with the next chapter URL.
@@ -247,6 +290,10 @@ Run these with the backend running at `http://localhost:8080`.
 **Controls, speed, next chapter, positions:**
 - [ ] **Dialogue:** a chapter with short dialogue lines reads them one per chunk. ⏭ moves exactly one line, and the counter shows one chunk per paragraph.
 - [ ] **Skipping:** press ⏭ or `→` five times quickly. It lands five chunks further, almost instantly, with no overlapping or stale audio.
+- [ ] **Going back:** press ⏮ or `←` five times quickly. The highlight follows every press, and reading starts at the final paragraph without a few seconds' hang (the backend log at debug level shows one `now` request). Going back 2–3 paragraphs you just heard plays at once.
+- [ ] **Manual next chapter:** while reading, click the site's own "Next chapter" link. Reading pauses and the badge clears. Open the popup on the new chapter: **Read chapter** starts almost at once.
+- [ ] **API token:** start the backend with `CHAPTERLY_API_TOKEN` set. Without a token in Settings, the voice list and reading show "The backend requires an API token…"; a wrong one shows "…rejected the API token…"; the right one works. `curl` without the header gets `401`.
+- [ ] **Clear audio cache:** Settings shows the cache size; **Clear audio cache** sets it to 0.
 - [ ] **Paragraph shortcuts:** `Alt+Shift+Right` and `Alt+Shift+Left` move by whole paragraphs, also while another tab is focused. `Alt+Shift+P` toggles playback.
 - [ ] **Page keys:** on the chapter page, `→`, `←` and `k` work. Typing in the site's search or comment box isn't hijacked. Space still scrolls. With "Arrow keys control reading" off, the site's own arrow-key navigation works again.
 - [ ] **Click to jump:**

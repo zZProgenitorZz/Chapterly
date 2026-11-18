@@ -8,6 +8,8 @@ import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
+import java.util.concurrent.CancellationException;
+
 /** Turns every failure into a JSON {@link ErrorResponse} with the right status code. */
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -21,6 +23,18 @@ public class GlobalExceptionHandler {
             case UPSTREAM_ERROR -> HttpStatus.BAD_GATEWAY;
         };
         return body(status, new ErrorResponse(e.getReason().name(), e.getMessage(), e.getProvider()));
+    }
+
+    /** chapterly.api-token is set and the request didn't send it (see ApiTokenConfig). */
+    @ExceptionHandler(UnauthorizedException.class)
+    public ResponseEntity<ErrorResponse> handleUnauthorized(UnauthorizedException e) {
+        return body(HttpStatus.UNAUTHORIZED, new ErrorResponse("UNAUTHORIZED", e.getMessage()));
+    }
+
+    /** The client cancelled the request (DELETE /api/tts/requests/{id}) while it was queued. */
+    @ExceptionHandler(CancellationException.class)
+    public ResponseEntity<ErrorResponse> handleCancelled(CancellationException e) {
+        return body(HttpStatus.CONFLICT, new ErrorResponse("CANCELLED", "The request was cancelled"));
     }
 
     @ExceptionHandler(HttpMessageNotReadableException.class)

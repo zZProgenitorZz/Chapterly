@@ -85,42 +85,86 @@ async function request(url, init, { baseUrl, signal, timeoutMs, fetchImpl }, rea
 
 const defaultFetch = (...args) => globalThis.fetch(...args);
 
+export const REQUEST_ID_HEADER = 'X-Chapterly-Request-Id';
+export const PRIORITY_HEADER = 'X-Chapterly-Priority';
+/** Shared token, required by the backend when CHAPTERLY_API_TOKEN is set. */
+export const TOKEN_HEADER = 'X-Chapterly-Token';
+
+/** Adds X-Chapterly-Token when a token is configured. */
+function withToken(headers, apiToken) {
+  return apiToken ? { ...headers, [TOKEN_HEADER]: apiToken } : headers;
+}
+
+export function cancelUrl(baseUrl, requestId) {
+  return `${trimBase(baseUrl)}/api/tts/requests/${encodeURIComponent(requestId)}`;
+}
+
+/**
+ * DELETE {baseUrl}/api/tts/requests/{id}: drops the request if it is still waiting in the
+ * backend's Kokoro queue. Fire-and-forget: never throws, never rejects.
+ */
+export function cancelSpeech(baseUrl, requestId, { apiToken, fetchImpl = defaultFetch } = {}) {
+  if (!baseUrl || !requestId) return;
+  try {
+    const init = { method: 'DELETE', headers: withToken({}, apiToken) };
+    Promise.resolve(fetchImpl(cancelUrl(baseUrl, requestId), init)).catch(() => {});
+  } catch {
+    // fetch threw synchronously (e.g. invalid URL); nothing to cancel
+  }
+}
+
 /**
  * Requests speech for one piece of text.
  * @param {object} o
  * @param {string} [o.provider] provider to try first ("kokoro", "azure"); backend default if omitted
  * @param {string} [o.voice] voice id of that provider; provider default if omitted
+ * @param {string} [o.requestId] sent as X-Chapterly-Request-Id; when `signal` aborts, the
+ *   backend is told to drop the request (DELETE) so Kokoro never generates it
+ * @param {'now'|'prefetch'} [o.priority] sent as X-Chapterly-Priority ("now" = a listener waits for it)
+ * @param {string} [o.apiToken] sent as X-Chapterly-Token (backend's CHAPTERLY_API_TOKEN)
  * @returns {Promise<{blob: Blob, provider: string, voice: string|null, fallback: boolean}>}
  * @throws {TtsError} typed error, or the caller's abort reason (AbortError) if `signal` was aborted.
  */
-export function fetchSpeech(
+export async function fetchSpeech(
   text,
-  { baseUrl, signal, provider, voice, timeoutMs = CLIENT_TIMEOUT_MS, fetchImpl = defaultFetch } = {},
+  { baseUrl, signal, provider, voice, requestId, priority, apiToken, timeoutMs = CLIENT_TIMEOUT_MS, fetchImpl = defaultFetch } = {},
 ) {
   const body = { text };
   if (provider) body.provider = provider;
   if (voice) body.voice = voice;
   // No Accept header on purpose: the backend's error bodies are JSON, and
   // "Accept: audio/mpeg" would turn them into 406 responses.
-  const init = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
-  return request(speechUrl(baseUrl), init, { baseUrl, signal, timeoutMs, fetchImpl }, async (response) => {
-    const blob = await response.blob();
-    if (!blob || blob.size === 0) throw new EmptyAudio(baseUrl);
-    return {
-      blob,
-      provider: response.headers.get('X-TTS-Provider') ?? 'unknown',
-      voice: response.headers.get('X-TTS-Voice'),
-      fallback: response.headers.get('X-TTS-Fallback') === 'true',
-    };
-  });
+  const headers = { 'Content-Type': 'application/json' };
+  if (requestId) headers[REQUEST_ID_HEADER] = requestId;
+  if (priority) headers[PRIORITY_HEADER] = priority;
+  const init = { method: 'POST', headers: withToken(headers, apiToken), body: JSON.stringify(body) };
+
+  // Aborting the fetch only closes our side; the backend would still generate the audio.
+  const onAbort = requestId && baseUrl ? () => cancelSpeech(baseUrl, requestId, { apiToken, fetchImpl }) : null;
+  if (onAbort && signal) signal.addEventListener('abort', onAbort, { once: true });
+  try {
+    return await request(speechUrl(baseUrl), init, { baseUrl, signal, timeoutMs, fetchImpl }, async (response) => {
+      const blob = await response.blob();
+      if (!blob || blob.size === 0) throw new EmptyAudio(baseUrl);
+      return {
+        blob,
+        provider: response.headers.get('X-TTS-Provider') ?? 'unknown',
+        voice: response.headers.get('X-TTS-Voice'),
+        fallback: response.headers.get('X-TTS-Fallback') === 'true',
+      };
+    });
+  } finally {
+    if (onAbort && signal) signal.removeEventListener('abort', onAbort);
+  }
 }
 
 /**
  * GET /api/voices.
  * @returns {Promise<{defaultProvider: string, providers: Array<{name, displayName, available, defaultVoice, voices: Array<{id, label, language, gender}>}>}>}
  */
-export function fetchVoices(baseUrl, { signal, timeoutMs = VOICES_TIMEOUT_MS, fetchImpl = defaultFetch } = {}) {
-  return request(voicesUrl(baseUrl), { method: 'GET' }, { baseUrl, signal, timeoutMs, fetchImpl }, async (response) => {
+export function fetchVoices(baseUrl, { signal, apiToken, timeoutMs = VOICES_TIMEOUT_MS, fetchImpl = defaultFetch } = {}) {
+  const init = { method: 'GET', headers: withToken({}, apiToken) };
+  return request(voicesUrl(baseUrl), init, { baseUrl, signal, timeoutMs, fetchImpl }, async (response) => {
     let catalog;
     try {
       catalog = await response.json();
