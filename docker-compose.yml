@@ -47,7 +47,7 @@ services:
     image: chapterly-backend:latest
     restart: unless-stopped
     ports:
-      - "127.0.0.1:${CHAPTERLY_BACKEND_PORT:-8080}:8080"
+      - "${CHAPTERLY_BACKEND_PORT:-8080}:8080"
     env_file:
       - path: .env
         required: false # works without Azure
