@@ -59,7 +59,7 @@ While a chapter is being read, a plain click on a paragraph jumps reading to tha
 
 Small previous / play-pause / next buttons that stay on the reading page, so you can skip or pause with the mouse while the popup is closed. **Off by default.** Turn them on with **Floating buttons on the page** in the popup or in Settings; the change applies to the open page at once.
 
-- **Where they show:** on the page of the chapter being read, while that chapter session is the active one: playing, paused, loading, after ⏹ Stop, and when the chapter has finished. They disappear when you turn the setting off, when another session starts, in fullscreen, and when printing. After "Continue with the next chapter" they appear on the next chapter page at the same spot.
+- **Where they show:** on the page of the chapter being read (the popup says so under the switch, and says "Press Read chapter to show them" when no chapter is being read), while that chapter session is the active one: playing, paused, loading, after ⏹ Stop, and when the chapter has finished. They disappear when you turn the setting off, when another session starts, in fullscreen, and when printing. After "Continue with the next chapter" they appear on the next chapter page at the same spot.
 - **Not for selections:** "Read selection" sessions don't inject anything into the page, so they have no floating buttons.
 - **What they do:** the same as `←`, `k` and `→` on the page. The middle button shows ⏸ while playing, a thin pulsing ring while loading or buffering, and a rose dot on an error (hover it for the message). The buttons work with Tab and Enter/Space too; the page keys keep working as before.
 - **Moving them:** drag the grip (the six dots), or drag anywhere on the pill once you've moved more than 4 px (a press without movement is a normal click; a drag never clicks). They always stay fully on screen, 8 px from the edges, also after the window is resized. **Double-click the grip** to put them back in the default spot, 24 px from the bottom-right corner.
@@ -87,7 +87,13 @@ Speed ranges from 0.75x to 2.5x in steps of 0.1x. You can change it in the popup
 
 ### Moving to another page yourself
 
-When the tab of the chapter being read goes to another page (you clicked the site's "Next" link, typed a URL, went back), Chapterly pauses reading, saves the position, cancels every prefetch (only a current chunk that is already loaded is kept) and sets the badge back to idle. The old chapter no longer plays on or keeps Kokoro busy. A change of only the `#hash` isn't a new page, and the automatic "Continue with the next chapter" navigation is not affected.
+When the tab of the chapter being read goes to another page (you clicked the site's "Next" link, typed a URL, went back, or reloaded), Chapterly pauses reading, saves the position, cancels every prefetch (only a current chunk that is already loaded is kept) and sets the badge back to idle. The old page no longer counts as the session's page, so its keys and floating buttons switch off. The old chapter no longer plays on or keeps Kokoro busy. A change of only the `#hash` isn't a new page, and the automatic "Continue with the next chapter" navigation is not affected.
+
+Two independent signals report it, because Chapterly has neither the `tabs` nor the `webNavigation` permission:
+- **From the page:** while it has the active session, the page sends `PAGE_LEAVING` on `pagehide`. For sites that change the URL without loading a new page (single-page apps), it also checks on `popstate` and once a second.
+- **From `chrome.tabs.onUpdated`:** without the `tabs` permission or the site's host permission, Chrome leaves out the new URL. So a `loading` status of the session's tab counts as leaving too; a reload drops the paragraph marks anyway, so pausing is right.
+
+Both may fire for one navigation; the second one changes nothing (a paused player isn't paused again).
 
 **Warm start:** when you open the popup on a web page that isn't the one being read, and Chapterly already has permission for that site, the service worker quietly extracts the chapter and fetches its first chunk (or the chunk of your remembered position) without playing anything. **Read chapter** then reuses that work and starts almost at once.
 - Nothing changes until you press **Read chapter**: the session being read, its highlight, the popup and the badge stay as they were. If something is playing, it keeps playing; the first chunk is only fetched into the audio cache.
@@ -101,6 +107,12 @@ Chapterly remembers where you are in each novel, in `chrome.storage.local` under
 - **When it's saved:** at most every 5 seconds while reading, and also on pause, on stop and at the end of a chapter.
 - **Resuming:** when you click **Read chapter** on the exact chapter URL of a saved position that isn't at the very start or end, the popup offers **Resume from paragraph N** (the default) or **Start from the top**. Positions are matched by paragraph, not chunk, because chunking can change between versions.
 - **Settings → Forget saved positions** clears them all.
+
+## Troubleshooting
+
+- **Keys or floating buttons misbehave after an update:** after updating or reloading the extension, Chapterly re-injects its page scripts on the next Read chapter; if keys or the floating buttons still misbehave, refresh the page once.
+  - **Why:** a tab keeps the previous version's page scripts after a reload, but they are cut off from the extension. Every injection is therefore stamped with an id that is new for each extension load (kept in `chrome.storage.session`). A stamp from an older load counts as "not injected": its install guards are reset, old floating buttons are removed, and the current scripts are injected again.
+  - **Old scripts stay quiet:** page scripts check `chrome.runtime.id` before handling a key or click, so a cut-off copy never swallows input (and its floating buttons remove themselves). This protects every future reload. Scripts injected by versions from before this change don't have that check, which is why one page refresh can still be needed.
 
 ## Choosing a voice
 
@@ -259,6 +271,11 @@ Test files:
 - `audio-store.test.js`: the persistent audio cache on a fake Cache Storage: keys, put/get, no fallback audio, LRU eviction above the limit, the index across instances and its rebuild, clear.
 - `tts-client-cancel.test.js`: the `X-Chapterly-*` headers, the `DELETE` on abort (and none without an id or after the response), errors of the `DELETE` ignored.
 - `background-helpers.test.js`: the serial command queue (order, errors, one restore for a burst of commands), injecting content scripts only when missing, tab-navigation and prepared-chapter decisions.
+- `page-leave.test.js`: leaving the reading page. `PAGE_LEAVING` from the session's tab pauses, saves and drops prefetches; from another tab or URL, during auto-next, or for a selection it's ignored; a `loading` update without a URL for the session's tab stops reading, for another tab it doesn't; both paths together pause once.
+- `inject.test.js`: versioned injection in a jsdom page:
+  - scripts count as present only with this load's instance id; a reload's leftovers are replaced (guards reset, old buttons and style removed, new listeners installed);
+  - an orphaned key handler doesn't `preventDefault`, an orphaned floating widget removes itself;
+  - `PAGE_LEAVING` on `pagehide` and on an SPA URL change (not on a `#hash` change), only while the page has the session.
 - `floating-controls.test.js`: the floating buttons in jsdom with a fake `chrome`:
   - hidden by default (no element created), shown with the setting on and the session active, hidden again for the setting off, another session, or fullscreen; print CSS;
   - buttons send `PAGE_COMMAND` previous/toggle/next with the page URL; clicks don't reach the document; mouse clicks blur, keyboard activation keeps focus;
@@ -314,6 +331,8 @@ Run these with the backend running at `http://localhost:8080`.
 - [ ] **API token:** start the backend with `CHAPTERLY_API_TOKEN` set. Without a token in Settings, the voice list and reading show "The backend requires an API token…"; a wrong one shows "…rejected the API token…"; the right one works. `curl` without the header gets `401`.
 - [ ] **Clear audio cache:** Settings shows the cache size; **Clear audio cache** sets it to 0.
 - [ ] **Paragraph shortcuts:** `Alt+Shift+Right` and `Alt+Shift+Left` move by whole paragraphs, also while another tab is focused. `Alt+Shift+P` toggles playback.
+- [ ] **Navigating away by hand:** while a chapter plays, click the site's own "Next chapter" link (or reload). Reading pauses within a moment, the badge clears, and the old chapter doesn't keep playing. With auto-next, the next chapter still starts on its own.
+- [ ] **Extension reload with a novel tab open:** reload Chapterly in `chrome://extensions`, then press **Read chapter** in that tab. `←`, `→`, `k` and the floating buttons work, and only once per press.
 - [ ] **Floating buttons:** turn on "Floating buttons on the page" in the popup while reading. The pill appears bottom-right at once; ⏮ ⏯ ⏭ work and clicking them never jumps to a paragraph. Drag it to the top-left, resize the window: it stays in that corner. Reload the extension and read another chapter: same spot. Double-click the grip: back to bottom-right. Turn the setting off: gone at once. With auto-next on, it appears on the next chapter page too.
 - [ ] **Page keys:** on the chapter page, `→`, `←` and `k` work. Typing in the site's search or comment box isn't hijacked. Space still scrolls. With "Arrow keys control reading" off, the site's own arrow-key navigation works again.
 - [ ] **Click to jump:**

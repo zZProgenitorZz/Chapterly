@@ -12,10 +12,19 @@
 // Click: a plain single click on a chapter paragraph jumps there. Not on links,
 // buttons or form controls, not while selecting text, not on double clicks, not with
 // modifier keys.
+//
+// Leaving: while active, PAGE_LEAVING {url} goes to the service worker on pagehide and
+// when the URL changes without a page load (SPA: popstate, plus a 1 s check), so the old
+// chapter stops even where tabs.onUpdated carries no URL (no "tabs" permission).
+//
+// Orphan-safe: after the extension is reloaded or updated, this script stays in the page
+// but chrome.runtime.id is gone. Its handlers then do nothing, so they never swallow keys
+// or clicks meant for the new version.
 (() => {
   const ns = (globalThis.ChapterlyContent ??= {});
   const P_ATTR = 'data-chapterly-p';
   const SETTINGS_DEFAULTS = { arrowKeysControl: true, clickToJump: true };
+  const LEAVE_CHECK_MS = 1000;
   const DOUBLE_CLICK_MS = 260; // wait this long so a double click (word select) can cancel the jump
   const INTERACTIVE =
     'a[href], button, input, select, textarea, label, summary, option, [role="button"], [role="link"], [contenteditable=""], [contenteditable="true"]';
@@ -81,9 +90,52 @@
 
   const state = { active: false, ...SETTINGS_DEFAULTS };
   let pendingJump = null;
+  let leaveTimer = null;
+
+  /** This copy belongs to an extension version that was reloaded or updated away. */
+  const orphaned = () => !globalThis.chrome?.runtime?.id;
 
   const send = (type, payload) =>
     chrome.runtime.sendMessage({ target: 'background', type, payload: { url: ns.extractedUrl, ...payload } }).catch(() => {});
+
+  // ---------- leaving the page ----------
+
+  const stripHash = (url) => ns.cleaning.stripHash(url); // cleaning.js is injected first
+
+  /** Fire-and-forget: pagehide gives no time to wait for an answer. */
+  function sendLeaving() {
+    if (!state.active || orphaned()) return;
+    const url = ns.extractedUrl;
+    state.active = false; // this page is no longer the session's page
+    applyClasses();
+    stopLeaveWatch();
+    try {
+      chrome.runtime.sendMessage({ target: 'background', type: 'PAGE_LEAVING', payload: { url } })?.catch?.(() => {});
+    } catch {
+      // extension context gone
+    }
+  }
+
+  /** SPA navigation: the document stays, the URL changes. */
+  function checkUrl() {
+    if (!state.active) return;
+    if (orphaned()) return stopLeaveWatch();
+    if (ns.extractedUrl && stripHash(location.href) !== ns.extractedUrl) sendLeaving();
+  }
+
+  function startLeaveWatch() {
+    if (leaveTimer == null) leaveTimer = setInterval(checkUrl, LEAVE_CHECK_MS);
+  }
+
+  function stopLeaveWatch() {
+    clearInterval(leaveTimer);
+    leaveTimer = null;
+  }
+
+  window.addEventListener('pagehide', () => sendLeaving());
+  window.addEventListener('popstate', () => checkUrl());
+
+  ns.pageControlsLive = { checkUrl, get watching() { return leaveTimer != null; }, get active() { return state.active; } };
 
   function applyClasses() {
     const root = document.documentElement;
@@ -107,6 +159,8 @@
     if (message?.target !== 'content' || message.type !== 'PAGE_SESSION') return undefined;
     state.active = Boolean(message.payload?.active) && message.payload?.url === ns.extractedUrl;
     applyClasses();
+    if (state.active) startLeaveWatch();
+    else stopLeaveWatch();
     return undefined;
   });
 
@@ -114,6 +168,7 @@
   window.addEventListener(
     'keydown',
     (event) => {
+      if (orphaned()) return; // reloaded extension: let the new version (or the site) handle it
       const command = keyCommand(event, state);
       if (!command) return;
       event.preventDefault();
@@ -126,6 +181,7 @@
   document.addEventListener(
     'click',
     (event) => {
+      if (orphaned()) return;
       if ((event.detail ?? 1) > 1) {
         clearTimeout(pendingJump); // second click of a double click: no jump
         pendingJump = null;

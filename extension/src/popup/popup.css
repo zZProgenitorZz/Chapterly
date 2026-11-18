@@ -392,6 +392,12 @@ button.play[data-action='retry']::before {
   font-variant-numeric: tabular-nums;
 }
 
+.switch-hint {
+  margin-top: -6px;
+  color: var(--faint-text);
+  font-size: 11px;
+}
+
 .toggle-row {
   cursor: pointer;
   color: var(--text);

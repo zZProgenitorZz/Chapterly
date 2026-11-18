@@ -12,14 +12,23 @@ export function fixture(name) {
   return readFileSync(join(ROOT, 'test', 'fixtures', name), 'utf8');
 }
 
-/** @returns {{window: Window, document: Document, ns: object}} */
-export function loadPage(html, url) {
+/**
+ * @param {object} [options]
+ * @param {(window) => void} [options.before] runs before the scripts (e.g. to install a fake chrome)
+ * @param {boolean} [options.scripts] false: load the page without the content scripts
+ * @returns {{window: Window, document: Document, ns: object}}
+ */
+export function loadPage(html, url, { before, scripts = true } = {}) {
   const dom = new JSDOM(html, { url, runScripts: 'outside-only', pretendToBeVisual: true });
   const { window } = dom;
-  for (const file of CONTENT_SCRIPT_FILES) {
-    window.eval(readFileSync(join(ROOT, file), 'utf8'));
-  }
+  before?.(window);
+  if (scripts) evalContentScripts(window);
   return { window, document: window.document, ns: window.ChapterlyContent };
+}
+
+/** Evaluates content script files in the page, like chrome.scripting.executeScript({files}). */
+export function evalContentScripts(window, files = CONTENT_SCRIPT_FILES) {
+  for (const file of files) window.eval(readFileSync(join(ROOT, file), 'utf8'));
 }
 
 /** Extracts like the service worker sees it: the result is cloned out of the page realm. */

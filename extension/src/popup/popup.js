@@ -42,6 +42,7 @@ const els = {
   faster: $('faster'),
   autoNext: $('auto-next'),
   floating: $('floating-controls'),
+  floatingHint: $('floating-hint'),
   shortcuts: $('shortcuts'),
 };
 
@@ -107,6 +108,7 @@ function render(state, event) {
   }
 
   renderChapterBox(state, chapter, finished);
+  renderFloatingHint();
 
   els.toggle.textContent = busy ? 'Pause' : status === 'error' ? 'Retry' : 'Play';
   els.toggle.dataset.action = busy ? 'pause' : status === 'error' ? 'retry' : 'play'; // picks the icon (CSS)
@@ -241,7 +243,15 @@ els.autoNext.addEventListener('change', () => {
   saveSettings({ autoNextChapter: els.autoNext.checked }).catch((err) => showNotice(err.message));
 });
 
+/** The floating buttons live on the page being read: say so, or how to get one. */
+function renderFloatingHint() {
+  const chapterSession = Boolean(current?.sessionId) && current?.meta?.kind === 'chapter';
+  els.floatingHint.textContent =
+    els.floating.checked && !chapterSession ? 'Press Read chapter to show them' : 'Shown on the page being read';
+}
+
 els.floating.addEventListener('change', () => {
+  renderFloatingHint();
   saveSettings({ floatingControls: els.floating.checked }).catch((err) => showNotice(err.message));
 });
 
@@ -249,7 +259,10 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'sync') return;
   if ('playbackRate' in changes) renderRate(changes.playbackRate.newValue ?? DEFAULTS.playbackRate);
   if ('autoNextChapter' in changes) els.autoNext.checked = Boolean(changes.autoNextChapter.newValue);
-  if ('floatingControls' in changes) els.floating.checked = Boolean(changes.floatingControls.newValue);
+  if ('floatingControls' in changes) {
+    els.floating.checked = Boolean(changes.floatingControls.newValue);
+    renderFloatingHint();
+  }
 });
 
 async function loadSettings() {
@@ -257,6 +270,7 @@ async function loadSettings() {
   renderRate(settings.playbackRate);
   els.autoNext.checked = settings.autoNextChapter;
   els.floating.checked = settings.floatingControls;
+  renderFloatingHint();
   const selection = { provider: settings.provider, voice: settings.voice };
   try {
     catalog = await fetchVoices(settings.backendUrl, { apiToken: settings.apiToken });

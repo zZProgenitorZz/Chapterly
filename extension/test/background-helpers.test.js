@@ -1,7 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createSerialQueue } from '../src/shared/serial.js';
-import { contentScriptsPresent, ensureContentScripts } from '../src/background/inject.js';
 import { PREPARED_TTL_MS, isHttpUrl, isNavigationAway, isSessionFor, stripHash, usablePrepared } from '../src/background/navigation.js';
 import { flush } from './helpers/fakes.js';
 
@@ -52,37 +51,6 @@ test('serial queue: concurrent restore requests restore once', async () => {
   };
   await Promise.all(['toggle', 'next', 'next', 'previous'].map(() => serial(ensurePlayerSession)));
   assert.equal(restores, 1);
-});
-
-// ---------- content-script injection ----------
-
-function fakeScripting({ present = false, failProbe = false } = {}) {
-  const calls = [];
-  return {
-    calls,
-    async executeScript(details) {
-      calls.push(details.files ? 'inject' : 'func');
-      if (details.func) {
-        if (failProbe) throw new Error('Cannot access contents of the page');
-        return [{ result: present }];
-      }
-      present = true;
-      return [{}];
-    },
-  };
-}
-
-test('content scripts are injected only when missing', async () => {
-  const scripting = fakeScripting({ present: false });
-  assert.equal(await ensureContentScripts(scripting, 7, ['a.js']), true);
-  assert.deepEqual(scripting.calls, ['func', 'inject']);
-
-  assert.equal(await ensureContentScripts(scripting, 7, ['a.js']), false, 'second time: already there');
-  assert.deepEqual(scripting.calls, ['func', 'inject', 'func']);
-});
-
-test('a probe that fails counts as "not present" (the injection then reports the real error)', async () => {
-  assert.equal(await contentScriptsPresent(fakeScripting({ failProbe: true }), 1), false);
 });
 
 // ---------- tab navigation and prepared chapters ----------

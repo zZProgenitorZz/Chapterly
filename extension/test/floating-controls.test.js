@@ -20,6 +20,7 @@ function fakeChrome({ sync = {}, local = {}, respond = () => undefined } = {}) {
     sent,
     local,
     runtime: {
+      id: 'test-extension', // undefined = orphaned (extension reloaded)
       onMessage: fakeEvent(),
       sendMessage: async (message) => {
         sent.push(message);

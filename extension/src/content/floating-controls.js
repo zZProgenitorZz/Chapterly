@@ -14,6 +14,9 @@
 // The pill can be dragged anywhere (by the grip, or anywhere with a 4px threshold). Its place
 // is stored per device in chrome.storage.local as the nearest corner and the distance to it,
 // so it stays put when the window is resized. Double-click the grip to reset.
+//
+// Orphan-safe: after the extension is reloaded or updated, chrome.runtime.id is gone; the
+// widget then removes its own element and ignores everything (the new version brings its own).
 (() => {
   const ns = (globalThis.ChapterlyContent ??= {});
 
@@ -162,6 +165,18 @@
     const ui = {};
     let drag = null; // {pointerId, startX, startY, left, top, threshold, moved}
     let suppressClickUntil = 0;
+    let dead = false;
+
+    /** True (and the widget removed) once this copy's extension context is gone. */
+    function orphaned() {
+      if (dead) return true;
+      if (chrome.runtime?.id) return false;
+      dead = true;
+      host?.remove();
+      host = null;
+      root = null;
+      return true;
+    }
 
     const getViewport =
       viewport ??
@@ -205,6 +220,7 @@
       ui.pill.addEventListener(
         'click',
         (e) => {
+          if (orphaned()) return;
           if (Date.now() < suppressClickUntil) {
             e.preventDefault();
             e.stopPropagation();
@@ -214,6 +230,7 @@
       );
       for (const button of ui.buttons) {
         button.addEventListener('click', (e) => {
+          if (orphaned()) return;
           void send('PAGE_COMMAND', { command: button.dataset.command });
           if (e.detail > 0) button.blur(); // mouse: don't keep focus (Space/Enter would repeat it)
         });
@@ -259,6 +276,7 @@
     }
 
     function update() {
+      if (orphaned()) return;
       const show = shouldShow();
       if (show && !host) build();
       if (!host) return;
@@ -269,6 +287,7 @@
     // ----- dragging -----
 
     function onPointerDown(e) {
+      if (orphaned()) return;
       if (e.button !== 0 && e.pointerType !== 'touch') return;
       const onGrip = ui.grip.contains(e.target);
       const pos = state.position ?? { left: 0, top: 0 };
@@ -338,7 +357,7 @@
     }
 
     function onMessage(message) {
-      if (message?.target !== 'content') return undefined;
+      if (message?.target !== 'content' || orphaned()) return undefined;
       const payload = message.payload ?? {};
       if (message.type === 'PAGE_SESSION') {
         setSession(Boolean(payload.active) && payload.url === ns.extractedUrl);
@@ -349,6 +368,7 @@
     }
 
     function onStorageChanged(changes, area) {
+      if (orphaned()) return;
       if (area === 'sync' && SETTING in changes) setEnabled(changes[SETTING].newValue);
       if (area === 'local' && POSITION_KEY in changes) {
         state.anchor = normalizeAnchor(changes[POSITION_KEY].newValue);
@@ -357,6 +377,7 @@
     }
 
     function onResize() {
+      if (orphaned()) return;
       placeFromAnchor(); // same corner and distance, clamped into the new viewport
     }
 

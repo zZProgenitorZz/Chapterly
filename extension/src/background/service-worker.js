@@ -10,7 +10,8 @@
 import { chunkIndexForParagraph, chunkIndexForPosition, chunkParagraphs, splitIntoChunks } from '../shared/chunker.js';
 import { createChapterFlow } from './chapter-flow.js';
 import { contentScriptsPresent, ensureContentScripts } from './inject.js';
-import { isHttpUrl, isNavigationAway, isSessionFor, originPattern, usablePrepared } from './navigation.js';
+import { isHttpUrl, isSessionFor, originPattern, usablePrepared } from './navigation.js';
+import { createPageLeave } from './page-leave.js';
 import { CONTENT_SCRIPT_FILES } from '../content/extractors/registry.js';
 import { createAudioStore } from '../player/audio-store.js';
 import { createSerialQueue } from '../shared/serial.js';
@@ -94,26 +95,33 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 
 // The reading tab moved to another page (the user navigated, not auto-next): stop the old
 // chapter from playing on and from keeping Kokoro busy with its prefetches.
+// Two paths report it (see page-leave.js): PAGE_LEAVING from the page itself, and
+// tabs.onUpdated, whose changeInfo.url is usually missing (no "tabs" permission), so a
+// 'loading' status of the session's tab counts as well. stop() is idempotent.
+const pageLeave = createPageLeave({
+  getActiveSession: () => getActiveSession(),
+  isNavigating: (tabId) => chapterFlow.isNavigating(tabId),
+  getPlayerState: async () => ((await hasOffscreen()) ? toOffscreen(MessageType.PLAYER_GET_STATE) : null),
+  savePosition: (session, state) => savePosition(session, state, { force: true }).catch(() => {}),
+  pause: () => toOffscreen(MessageType.PLAYER_PAUSE),
+  dropPrefetches: () => toOffscreen(MessageType.PLAYER_DROP_PREFETCH),
+  deactivatePage: (session) => setPageSession(session, false),
+  setBadge: (badge) => setBadge(badge),
+});
+
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (!changeInfo.url) return;
+  if (!changeInfo.url && changeInfo.status !== 'loading') return;
   if (chapterFlow.isNavigating(tabId)) return; // our own navigation to the next chapter
-  commandQueue(() => stopForNavigation(tabId, changeInfo.url)).catch((err) =>
+  commandQueue(() => pageLeave.onTabUpdated(tabId, changeInfo)).catch((err) =>
     console.error('[chapterly] tab navigation', err),
   );
 });
 
-async function stopForNavigation(tabId, url) {
-  const session = await getActiveSession();
-  if (!isNavigationAway(session, tabId, url)) return;
-  if (await hasOffscreen()) {
-    const state = await toOffscreen(MessageType.PLAYER_GET_STATE);
-    if (state?.sessionId === session.sessionId && !state.prepared) {
-      await savePosition(session, state, { force: true }).catch(() => {});
-      await toOffscreen(MessageType.PLAYER_PAUSE);
-      await toOffscreen(MessageType.PLAYER_DROP_PREFETCH);
-    }
-  }
-  await setBadge('idle');
+/** PAGE_LEAVING {url}: the session's page is being left (pagehide or an SPA URL change). */
+function handlePageLeaving(payload, sender) {
+  const tabId = sender?.tab?.id;
+  if (tabId == null || chapterFlow.isNavigating(tabId)) return { ok: false };
+  return commandQueue(() => pageLeave.onPageLeaving(payload, tabId)).then((result) => ({ ok: result === 'stopped', result }));
 }
 
 // Voice or speed changed in the popup or options page: apply it to the running player.
@@ -189,6 +197,8 @@ listen(Target.BACKGROUND, async ({ type, payload }, sender) => {
       return handlePlayerEvent(payload);
     case MessageType.PAGE_COMMAND:
       return handlePageCommand(payload, sender);
+    case MessageType.PAGE_LEAVING:
+      return handlePageLeaving(payload, sender);
     case MessageType.PAGE_SEEK:
       return handlePageSeek(payload, sender);
     case MessageType.GET_CONTROLS_STATE:
@@ -354,11 +364,33 @@ function handlePageSeek(payload, sender) {
   });
 }
 
-/** Injects the content scripts (unless already there) and extracts the chapter: {ok, doc} or {ok: false, error}. */
+const KEY_INSTANCE_ID = 'contentInstanceId';
+let instanceIdPromise = null;
+
+/**
+ * Id of this extension load, stamped on every content-script injection (see inject.js).
+ * Lives in chrome.storage.session: kept across service-worker restarts, cleared when the
+ * extension is reloaded or updated, so scripts of an older version never count as present.
+ */
+function getInstanceId() {
+  instanceIdPromise ??= (async () => {
+    const stored = (await chrome.storage.session.get(KEY_INSTANCE_ID))[KEY_INSTANCE_ID];
+    if (stored) return stored;
+    const id = crypto.randomUUID();
+    await chrome.storage.session.set({ [KEY_INSTANCE_ID]: id });
+    return id;
+  })().catch((err) => {
+    instanceIdPromise = null; // try again next time
+    throw err;
+  });
+  return instanceIdPromise;
+}
+
+/** Injects the content scripts (unless this version's are already there) and extracts the chapter: {ok, doc} or {ok: false, error}. */
 async function extractChapter(tabId) {
   let doc;
   try {
-    await ensureContentScripts(chrome.scripting, tabId, CONTENT_SCRIPT_FILES);
+    await ensureContentScripts(chrome.scripting, tabId, CONTENT_SCRIPT_FILES, await getInstanceId());
     const [injection] = await chrome.scripting.executeScript({
       target: { tabId },
       func: () => globalThis.ChapterlyContent.extract(),
@@ -408,7 +440,7 @@ async function takePrepared(tabId) {
   const prepared = usablePrepared(await getPreparedChapter(), { tabId, url: tab?.url });
   if (!prepared) return null;
   // A reload since then wipes the content scripts and the paragraph marks used for highlighting.
-  return (await contentScriptsPresent(chrome.scripting, tabId)) ? prepared : null;
+  return (await contentScriptsPresent(chrome.scripting, tabId, await getInstanceId())) ? prepared : null;
 }
 
 /**

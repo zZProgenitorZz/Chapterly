@@ -21,6 +21,9 @@ export const MessageType = Object.freeze({
   PLAYER_EVENT: 'PLAYER_EVENT', // offscreen player event: {event, data, state}
   PAGE_COMMAND: 'PAGE_COMMAND', // page keyboard shortcut: {url, command: 'next' | 'previous' | 'toggle'}
   PAGE_SEEK: 'PAGE_SEEK', // page click: {url, paragraphIndex, offset}
+  // the session's page is being left (pagehide, SPA URL change): {url}. String duplicated
+  // in src/content/page-controls.js.
+  PAGE_LEAVING: 'PAGE_LEAVING',
   GET_CONTROLS_STATE: 'GET_CONTROLS_STATE', // floating buttons: {url} -> {ok, status, index, total, error}
   // popup opened on a page without a session: extract and warm up chunk 0 (or the
   // remembered chunk) without playing, if the site permission is granted: {tabId}
