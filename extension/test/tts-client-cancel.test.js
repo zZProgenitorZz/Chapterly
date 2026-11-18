@@ -97,3 +97,18 @@ test('cancelSpeech never throws', () => {
   cancelSpeech(null, 'x');
   cancelSpeech(BASE, null);
 });
+
+test('a client timeout also sends the DELETE, so the timed-out request never runs on Kokoro', async () => {
+  const { calls, fetchImpl } = recordingFetch();
+  const keepAlive = setInterval(() => {}, 1000); // AbortSignal.timeout() timers don't keep Node alive
+  try {
+    const err = await fetchSpeech('Hi', { baseUrl: BASE, fetchImpl, requestId: 'slow-1', timeoutMs: 20 }).catch((e) => e);
+    assert.equal(err.kind, 'RequestTimeout');
+    await flush(1);
+    const del = calls.filter((c) => c.method === 'DELETE');
+    assert.equal(del.length, 1, 'exactly one DELETE');
+    assert.equal(del[0].url, `${BASE}/api/tts/requests/slow-1`);
+  } finally {
+    clearInterval(keepAlive);
+  }
+});

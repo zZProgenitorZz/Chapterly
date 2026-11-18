@@ -38,7 +38,7 @@ test('rejects invalid backend URLs', () => {
   assert.throws(() => normalizeBackendUrl('ftp://localhost'));
 });
 
-test('defaults: Kokoro with af_heart, 1x, auto-next off, page controls on', async () => {
+test('defaults: Kokoro with af_heart, 1x, auto-next off, page controls on, floating buttons off', async () => {
   assert.deepEqual(DEFAULTS, {
     backendUrl: 'http://localhost:8080',
     provider: 'kokoro',
@@ -47,6 +47,7 @@ test('defaults: Kokoro with af_heart, 1x, auto-next off, page controls on', asyn
     autoNextChapter: false,
     arrowKeysControl: true,
     clickToJump: true,
+    floatingControls: false,
   });
   assert.deepEqual(await getVoiceSelection(), { provider: 'kokoro', voice: 'af_heart' });
 });

@@ -100,7 +100,7 @@ document.getElementById('reset').addEventListener('click', () => save(DEFAULTS.b
 
 const speed = document.getElementById('speed');
 const speedValue = document.getElementById('speed-value');
-const CHECKBOXES = ['autoNextChapter', 'arrowKeysControl', 'clickToJump'];
+const CHECKBOXES = ['autoNextChapter', 'arrowKeysControl', 'clickToJump', 'floatingControls'];
 
 function renderSpeed(rate) {
   speed.value = String(rate);

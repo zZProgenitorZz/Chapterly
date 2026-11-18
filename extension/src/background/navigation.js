@@ -1,10 +1,20 @@
-// Pure decisions about tabs and pages, used by the service worker (tested in
-// test/navigation.test.js).
+// Pure decisions about tabs and pages, used by the service worker and the popup
+// (tested in test/background-helpers.test.js).
 
 /** How long a chapter prepared by the popup (PREPARE_CHAPTER) stays usable. */
 export const PREPARED_TTL_MS = 2 * 60 * 1000;
 
 export const stripHash = (url) => String(url ?? '').split('#')[0];
+
+/** Host-permission pattern for an http(s) page ("https://host/*"), or null. */
+export function originPattern(url) {
+  try {
+    const u = new URL(url);
+    return u.protocol === 'http:' || u.protocol === 'https:' ? `${u.origin}/*` : null;
+  } catch {
+    return null;
+  }
+}
 
 export function isHttpUrl(url) {
   try {

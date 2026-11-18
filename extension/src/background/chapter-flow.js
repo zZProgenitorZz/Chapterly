@@ -6,6 +6,8 @@
 //   setting off                 -> stop; the popup offers "Next chapter" (goToNext once)
 // The setting is read at sessionFinished time, so toggling it mid-chapter counts.
 
+import { originPattern, stripHash } from './navigation.js';
+
 export const NEXT_CHAPTER_TIMEOUT_MS = 20_000;
 
 /** Status shown in the popup while/after moving to the next chapter. */
@@ -29,16 +31,8 @@ export function decideAfterFinish(session, { autoNextChapter }) {
   return autoNextChapter ? 'auto' : 'offer';
 }
 
-export function originPattern(url) {
-  try {
-    const u = new URL(url);
-    return u.protocol === 'http:' || u.protocol === 'https:' ? `${u.origin}/*` : null;
-  } catch {
-    return null;
-  }
-}
-
-const stripHash = (url) => String(url ?? '').split('#')[0];
+// originPattern lives in navigation.js; re-exported for existing importers.
+export { originPattern };
 
 /**
  * @param {object} deps

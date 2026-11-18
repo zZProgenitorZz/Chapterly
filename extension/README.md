@@ -28,9 +28,9 @@ Reading works much like Microsoft Edge's Read Aloud. Every chunk is one paragrap
 
 | Action | Popup | Global shortcut | On the chapter page |
 |---|---|---|---|
-| Play / pause | ⏯ button | `Alt+Shift+P` | `k` |
-| Next chunk (next paragraph, or next part of a long one) | ⏭ | | `→` |
-| Previous chunk (restarts the current one if more than 3 s in) | ⏮ | | `←` |
+| Play / pause | ⏯ button | `Alt+Shift+P` | `k`, or the floating ⏯ |
+| Next chunk (next paragraph, or next part of a long one) | ⏭ | | `→`, or the floating ⏭ |
+| Previous chunk (restarts the current one if more than 3 s in) | ⏮ | | `←`, or the floating ⏮ |
 | Next paragraph (skips any remaining parts) | | `Alt+Shift+Right` | |
 | Previous paragraph | | `Alt+Shift+Left` | |
 | Faster / slower (±0.1x) | `+` / `−` (click the value to reset to 1x) | not set by default | |
@@ -54,6 +54,18 @@ While a chapter is being read, a plain click on a paragraph jumps reading to tha
 - **No jump when:** you click a link, button or form control; you select text; you double-click; you hold a modifier key; or "Click a paragraph to read from there" is off in Settings.
 - **Approximation:** if a paragraph's live text can't be matched exactly to the extracted text, the click starts at that paragraph's beginning. This can happen with the generic extractor, which sometimes maps a paragraph to a wrapper element, or with text Chapterly dropped, such as an author's-note line.
 - The right-click item **Chapterly: read from here** still works.
+
+### Floating buttons on the page
+
+Small previous / play-pause / next buttons that stay on the reading page, so you can skip or pause with the mouse while the popup is closed. **Off by default.** Turn them on with **Floating buttons on the page** in the popup or in Settings; the change applies to the open page at once.
+
+- **Where they show:** on the page of the chapter being read, while that chapter session is the active one: playing, paused, loading, after ⏹ Stop, and when the chapter has finished. They disappear when you turn the setting off, when another session starts, in fullscreen, and when printing. After "Continue with the next chapter" they appear on the next chapter page at the same spot.
+- **Not for selections:** "Read selection" sessions don't inject anything into the page, so they have no floating buttons.
+- **What they do:** the same as `←`, `k` and `→` on the page. The middle button shows ⏸ while playing, a thin pulsing ring while loading or buffering, and a rose dot on an error (hover it for the message). The buttons work with Tab and Enter/Space too; the page keys keep working as before.
+- **Moving them:** drag the grip (the six dots), or drag anywhere on the pill once you've moved more than 4 px (a press without movement is a normal click; a drag never clicks). They always stay fully on screen, 8 px from the edges, also after the window is resized. **Double-click the grip** to put them back in the default spot, 24 px from the bottom-right corner.
+- **Remembered per computer:** the position is stored in `chrome.storage.local` as the nearest corner plus the distance to it (`{corner, dx, dy}`), so it stays in the same corner when the window changes size. It is not synced, because screens differ.
+- **Isolation:** the buttons live in a closed shadow root on a single `position: fixed` element under `<html>`, created only when they are first shown. The site's CSS can't change them, they don't shift the page's layout, and clicks on them never reach the page (no accidental click-to-jump). Capture-phase listeners that the site registered on `window` or `document` still see the click, because they run before the event reaches the buttons.
+- **State:** the service worker sends `CONTROLS_STATE {url, status, index, total, error}` to the reading tab only when the status or the chunk changed, and again whenever a page becomes the session's page. When the buttons are injected or become active, they also ask once with `GET_CONTROLS_STATE`.
 
 ### Speed
 
@@ -131,7 +143,7 @@ popup ──READ_CHAPTER / READ_SELECTION / PLAYER_COMMAND──▶ service work
 |---|---|---|
 | Service worker | `src/background/service-worker.js` | The coordinator. See the list below. It keeps nothing important in memory. |
 | Session store | `src/shared/session-store.js` | `getActiveSession`, `saveActiveSession` and `updatePosition`, backed by `chrome.storage.session`. Also holds the latest player snapshot and the restore logic. |
-| Content scripts | `src/content/*` | Extract the chapter (ChapterDocument), clean it, highlight the paragraph being read, and remember which paragraph was right-clicked. |
+| Content scripts | `src/content/*` | Extract the chapter (ChapterDocument), clean it, highlight the paragraph being read, remember which paragraph was right-clicked, page keys and click-to-jump (`page-controls.js`), and the floating buttons (`floating-controls.js`). |
 | Chunker | `src/shared/chunker.js` | `chunkParagraphs(paragraphs)` returns `[{index, text, paragraphIndexes}]`. It's a pure function. |
 | Offscreen document | `src/offscreen/*` | Owns playback with two `<audio>` elements. It fetches audio itself; audio never passes through runtime messaging. |
 | Player | `src/player/player.js` | Plays a session. See the list below. |
@@ -247,6 +259,13 @@ Test files:
 - `audio-store.test.js`: the persistent audio cache on a fake Cache Storage: keys, put/get, no fallback audio, LRU eviction above the limit, the index across instances and its rebuild, clear.
 - `tts-client-cancel.test.js`: the `X-Chapterly-*` headers, the `DELETE` on abort (and none without an id or after the response), errors of the `DELETE` ignored.
 - `background-helpers.test.js`: the serial command queue (order, errors, one restore for a burst of commands), injecting content scripts only when missing, tab-navigation and prepared-chapter decisions.
+- `floating-controls.test.js`: the floating buttons in jsdom with a fake `chrome`:
+  - hidden by default (no element created), shown with the setting on and the session active, hidden again for the setting off, another session, or fullscreen; print CSS;
+  - buttons send `PAGE_COMMAND` previous/toggle/next with the page URL; clicks don't reach the document; mouse clicks blur, keyboard activation keeps focus;
+  - a press under 4 px is a click, a drag doesn't click and is saved on drag end only; grip dragging; clamping 8 px inside the viewport; double-click reset;
+  - corner/offset maths for saving and restoring, also after a resize;
+  - state rendering (pause icon, loading ring, error dot with message), asking for the state on injection;
+  - the service worker's notifier sends `CONTROLS_STATE` only when status or index changed.
 - `page-controls.test.js`: key handling (ignored without a session, with the setting off, with modifiers, and in inputs) and click rules (links, buttons, selection, double click). Also click-offset-to-chunk mapping on the fixtures, including `<br>`-separated text with hidden spans, and sentence ranges.
 - `chapter-flow.test.js`: auto-next with fake `chrome.tabs`. Covers:
   - `isNavigating()` is true only during auto-next's own navigation (so the tab-navigation stop ignores it);
@@ -295,6 +314,7 @@ Run these with the backend running at `http://localhost:8080`.
 - [ ] **API token:** start the backend with `CHAPTERLY_API_TOKEN` set. Without a token in Settings, the voice list and reading show "The backend requires an API token…"; a wrong one shows "…rejected the API token…"; the right one works. `curl` without the header gets `401`.
 - [ ] **Clear audio cache:** Settings shows the cache size; **Clear audio cache** sets it to 0.
 - [ ] **Paragraph shortcuts:** `Alt+Shift+Right` and `Alt+Shift+Left` move by whole paragraphs, also while another tab is focused. `Alt+Shift+P` toggles playback.
+- [ ] **Floating buttons:** turn on "Floating buttons on the page" in the popup while reading. The pill appears bottom-right at once; ⏮ ⏯ ⏭ work and clicking them never jumps to a paragraph. Drag it to the top-left, resize the window: it stays in that corner. Reload the extension and read another chapter: same spot. Double-click the grip: back to bottom-right. Turn the setting off: gone at once. With auto-next on, it appears on the next chapter page too.
 - [ ] **Page keys:** on the chapter page, `→`, `←` and `k` work. Typing in the site's search or comment box isn't hijacked. Space still scrolls. With "Arrow keys control reading" off, the site's own arrow-key navigation works again.
 - [ ] **Click to jump:**
   - Hovering a paragraph shows a pointer.

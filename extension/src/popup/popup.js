@@ -7,6 +7,7 @@ import { MessageType, PlayerCommand, Target, listen, toBackground } from '../sha
 import { DEFAULTS, formatRate, getSettings, saveSettings, stepRate } from '../shared/settings.js';
 import { fetchVoices, toErrorInfo } from '../player/tts-client.js';
 import { describeVoice, parseVoiceKey, renderVoiceOptions } from '../shared/voices.js';
+import { originPattern, stripHash } from '../background/navigation.js';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -40,6 +41,7 @@ const els = {
   rate: $('rate'),
   faster: $('faster'),
   autoNext: $('auto-next'),
+  floating: $('floating-controls'),
   shortcuts: $('shortcuts'),
 };
 
@@ -71,15 +73,6 @@ let catalog = null; // GET /api/voices
 let activeTab = null;
 let originGranted = false;
 let rate = DEFAULTS.playbackRate;
-
-function originPattern(url) {
-  try {
-    const u = new URL(url);
-    return u.protocol === 'http:' || u.protocol === 'https:' ? `${u.origin}/*` : null;
-  } catch {
-    return null;
-  }
-}
 
 function render(state, event) {
   current = state;
@@ -231,7 +224,7 @@ els.allowSite.addEventListener('click', () => {
   }, () => {});
 });
 
-// ---------- settings: voice, speed, auto-next ----------
+// ---------- settings: voice, speed, auto-next, floating buttons ----------
 
 els.voice.addEventListener('change', () => {
   const selection = parseVoiceKey(els.voice.value);
@@ -248,16 +241,22 @@ els.autoNext.addEventListener('change', () => {
   saveSettings({ autoNextChapter: els.autoNext.checked }).catch((err) => showNotice(err.message));
 });
 
+els.floating.addEventListener('change', () => {
+  saveSettings({ floatingControls: els.floating.checked }).catch((err) => showNotice(err.message));
+});
+
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'sync') return;
   if ('playbackRate' in changes) renderRate(changes.playbackRate.newValue ?? DEFAULTS.playbackRate);
   if ('autoNextChapter' in changes) els.autoNext.checked = Boolean(changes.autoNextChapter.newValue);
+  if ('floatingControls' in changes) els.floating.checked = Boolean(changes.floatingControls.newValue);
 });
 
 async function loadSettings() {
   const settings = await getSettings();
   renderRate(settings.playbackRate);
   els.autoNext.checked = settings.autoNextChapter;
+  els.floating.checked = settings.floatingControls;
   const selection = { provider: settings.provider, voice: settings.voice };
   try {
     catalog = await fetchVoices(settings.backendUrl, { apiToken: settings.apiToken });
@@ -280,7 +279,7 @@ async function loadShortcuts() {
   if (key('previous-paragraph') || key('next-paragraph')) {
     parts.push(`${[key('previous-paragraph'), key('next-paragraph')].filter(Boolean).join(' / ')} paragraph`);
   }
-  parts.push('On the page: ← → and k, click a paragraph to jump');
+  parts.push('On the page: ← → and k, click a paragraph to jump, or use the floating buttons (drag to move, double-click the grip to reset)');
   els.shortcuts.textContent = parts.join(' · ');
 }
 
@@ -309,8 +308,6 @@ const initialState = command(PlayerCommand.GET_STATE).catch((err) => {
   render(null);
   return null;
 });
-
-const stripHash = (url) => String(url ?? '').split('#')[0];
 
 // Warm start: on a page that isn't being read, let the service worker extract the chapter
 // and fetch its first chunk now, so "Read chapter" starts at once. Only on sites Chapterly

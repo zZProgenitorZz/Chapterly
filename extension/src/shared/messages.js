@@ -21,6 +21,7 @@ export const MessageType = Object.freeze({
   PLAYER_EVENT: 'PLAYER_EVENT', // offscreen player event: {event, data, state}
   PAGE_COMMAND: 'PAGE_COMMAND', // page keyboard shortcut: {url, command: 'next' | 'previous' | 'toggle'}
   PAGE_SEEK: 'PAGE_SEEK', // page click: {url, paragraphIndex, offset}
+  GET_CONTROLS_STATE: 'GET_CONTROLS_STATE', // floating buttons: {url} -> {ok, status, index, total, error}
   // popup opened on a page without a session: extract and warm up chunk 0 (or the
   // remembered chunk) without playing, if the site permission is granted: {tabId}
   PREPARE_CHAPTER: 'PREPARE_CHAPTER',
@@ -57,6 +58,9 @@ export const MessageType = Object.freeze({
   CLEAR_HIGHLIGHT: 'CLEAR_HIGHLIGHT', // {url}
   GET_CONTEXT_PARAGRAPH: 'GET_CONTEXT_PARAGRAPH', // {url} -> {paragraphIndex}
   PAGE_SESSION: 'PAGE_SESSION', // {url, active}: enables keyboard/click control on that page
+  // {url, status, index, total, error}: player state for the floating buttons, sent when
+  // status or index changed (string duplicated in src/content/floating-controls.js)
+  CONTROLS_STATE: 'CONTROLS_STATE',
 });
 
 export const PlayerCommand = Object.freeze({

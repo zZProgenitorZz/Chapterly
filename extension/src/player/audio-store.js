@@ -11,6 +11,8 @@
 // the least recently used entries are deleted. The index is kept in memory and written back
 // shortly after changes; all operations of one store run one at a time.
 
+import { createSerialQueue } from '../shared/serial.js';
+
 export const AUDIO_CACHE_NAME = 'chapterly-audio-v1';
 export const MAX_AUDIO_CACHE_BYTES = 150 * 1024 * 1024;
 const KEY_ORIGIN = 'https://chapterly.cache/';
@@ -38,12 +40,7 @@ export function createAudioStore({
   subtle = globalThis.crypto?.subtle,
   indexWriteDelayMs = INDEX_WRITE_DELAY_MS,
 } = {}) {
-  let queue = Promise.resolve();
-  const serial = (fn) => {
-    const run = queue.then(fn, fn);
-    queue = run.catch(() => {});
-    return run;
-  };
+  const serial = createSerialQueue();
 
   let index = null; // {url: {size, used}}, loaded on first use
   let writeTimer = null;

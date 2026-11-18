@@ -8,12 +8,13 @@
 // a burst of commands after a long pause restores the session once.
 
 import { chunkIndexForParagraph, chunkIndexForPosition, chunkParagraphs, splitIntoChunks } from '../shared/chunker.js';
-import { createChapterFlow, originPattern } from './chapter-flow.js';
+import { createChapterFlow } from './chapter-flow.js';
 import { contentScriptsPresent, ensureContentScripts } from './inject.js';
-import { isHttpUrl, isNavigationAway, isSessionFor, usablePrepared } from './navigation.js';
+import { isHttpUrl, isNavigationAway, isSessionFor, originPattern, usablePrepared } from './navigation.js';
 import { CONTENT_SCRIPT_FILES } from '../content/extractors/registry.js';
 import { createAudioStore } from '../player/audio-store.js';
 import { createSerialQueue } from '../shared/serial.js';
+import { controlsStateFrom, createControlsNotifier } from './controls-state.js';
 import { VOICE_KEYS, getSettings, getVoiceSelection, saveSettings, stepRate } from '../shared/settings.js';
 import {
   MessageType,
@@ -190,6 +191,8 @@ listen(Target.BACKGROUND, async ({ type, payload }, sender) => {
       return handlePageCommand(payload, sender);
     case MessageType.PAGE_SEEK:
       return handlePageSeek(payload, sender);
+    case MessageType.GET_CONTROLS_STATE:
+      return getControlsState(payload, sender);
     default:
       throw new Error(`Unknown background message: ${type}`);
   }
@@ -293,6 +296,29 @@ async function setPageSession(session, active) {
   await chrome.tabs
     .sendMessage(session.tabId, envelope(Target.CONTENT, MessageType.PAGE_SESSION, { url: session.url, active }), { frameId: 0 })
     .catch(() => {}); // tab navigated or closed
+  if (active) {
+    // New page for the floating buttons: send the current state again.
+    controlsNotifier.reset();
+    const state = await currentState().catch(() => null);
+    controlsNotifier.notify(session, state, { force: true });
+  }
+}
+
+// ---------- floating buttons on the page ----------
+
+const controlsNotifier = createControlsNotifier((tabId, payload) => {
+  chrome.tabs
+    .sendMessage(tabId, envelope(Target.CONTENT, MessageType.CONTROLS_STATE, payload), { frameId: 0 })
+    .catch(() => {}); // tab navigated or closed
+});
+
+/** The floating buttons ask once when they are injected or become active. */
+async function getControlsState(payload, sender) {
+  const session = await sessionForSender(payload, sender);
+  if (!session) return { ok: false };
+  const state = await currentState();
+  if (state?.sessionId !== session.sessionId) return { ok: false };
+  return { ok: true, ...controlsStateFrom(state) };
 }
 
 /** The active chapter session, if `sender` is its tab and still on its page. */
@@ -682,6 +708,7 @@ async function processPlayerEvent({ event, data, state }) {
       await setBadge(state.status);
   }
 
+  controlsNotifier.notify(session, state); // floating buttons: only on a status/index change
   await broadcast(Target.POPUP, MessageType.PLAYER_STATE, { state: await withChapterStatus(state), event });
   return { ok: true };
 }

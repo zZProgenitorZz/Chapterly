@@ -65,12 +65,14 @@ export function voicesUrl(baseUrl) {
 
 /**
  * Runs one request with the client timeout and maps failures to typed errors.
- * `read(response)` turns a 2xx response into the result.
+ * `read(response)` turns a 2xx response into the result. `onAbandon` runs if the request
+ * is given up before it completes: aborted by the caller or timed out.
  */
-async function request(url, init, { baseUrl, signal, timeoutMs, fetchImpl }, read) {
+async function request(url, init, { baseUrl, signal, timeoutMs, fetchImpl, onAbandon }, read) {
   if (!baseUrl) throw new TypeError('baseUrl is required');
   const timeout = AbortSignal.timeout(timeoutMs);
   const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
+  if (onAbandon) combined.addEventListener('abort', onAbandon, { once: true });
   try {
     const response = await fetchImpl(url, { ...init, signal: combined });
     if (!response.ok) throw await toBackendError(baseUrl, response);
@@ -80,6 +82,8 @@ async function request(url, init, { baseUrl, signal, timeoutMs, fetchImpl }, rea
     if (signal?.aborted) throw signal.reason ?? err; // cancelled by the caller (stop, seek)
     if (timeout.aborted) throw new RequestTimeout(baseUrl, timeoutMs);
     throw new BackendUnreachable(baseUrl, err);
+  } finally {
+    if (onAbandon) combined.removeEventListener('abort', onAbandon);
   }
 }
 
@@ -139,23 +143,19 @@ export async function fetchSpeech(
   if (priority) headers[PRIORITY_HEADER] = priority;
   const init = { method: 'POST', headers: withToken(headers, apiToken), body: JSON.stringify(body) };
 
-  // Aborting the fetch only closes our side; the backend would still generate the audio.
-  const onAbort = requestId && baseUrl ? () => cancelSpeech(baseUrl, requestId, { apiToken, fetchImpl }) : null;
-  if (onAbort && signal) signal.addEventListener('abort', onAbort, { once: true });
-  try {
-    return await request(speechUrl(baseUrl), init, { baseUrl, signal, timeoutMs, fetchImpl }, async (response) => {
-      const blob = await response.blob();
-      if (!blob || blob.size === 0) throw new EmptyAudio(baseUrl);
-      return {
-        blob,
-        provider: response.headers.get('X-TTS-Provider') ?? 'unknown',
-        voice: response.headers.get('X-TTS-Voice'),
-        fallback: response.headers.get('X-TTS-Fallback') === 'true',
-      };
-    });
-  } finally {
-    if (onAbort && signal) signal.removeEventListener('abort', onAbort);
-  }
+  // Aborting the fetch (caller abort or client timeout) only closes our side; the backend
+  // would still generate the audio. Tell it to drop the request.
+  const onAbandon = requestId && baseUrl ? () => cancelSpeech(baseUrl, requestId, { apiToken, fetchImpl }) : null;
+  return request(speechUrl(baseUrl), init, { baseUrl, signal, timeoutMs, fetchImpl, onAbandon }, async (response) => {
+    const blob = await response.blob();
+    if (!blob || blob.size === 0) throw new EmptyAudio(baseUrl);
+    return {
+      blob,
+      provider: response.headers.get('X-TTS-Provider') ?? 'unknown',
+      voice: response.headers.get('X-TTS-Voice'),
+      fallback: response.headers.get('X-TTS-Fallback') === 'true',
+    };
+  });
 }
 
 /**

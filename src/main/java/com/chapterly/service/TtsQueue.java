@@ -113,8 +113,12 @@ public class TtsQueue {
             Thread.currentThread().interrupt();
             abandon(waiter);
             throw new CancellationException("Interrupted while waiting in the TTS queue");
-        } catch (ExecutionException e) {
+        } catch (CancellationException e) {
+            // cancel(): the turn was completed with a CancellationException, which get() throws as is.
             throw new CancellationException("TTS request " + id + " was cancelled while queued");
+        } catch (ExecutionException e) {
+            // The turn is only ever completed normally or with a CancellationException.
+            throw new IllegalStateException("Unexpected TTS queue failure", e.getCause());
         }
         if (log.isDebugEnabled()) {
             log.debug("TTS job {} ({}) started after {} ms in the queue; {} still waiting",

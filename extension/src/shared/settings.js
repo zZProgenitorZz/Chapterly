@@ -1,8 +1,8 @@
 // User settings stored in chrome.storage.sync. Keep every setting in DEFAULTS.
 // Exception: the API token is a secret and stays on this device (chrome.storage.local);
 // getSettings() still returns it as apiToken.
-// The content script (src/content/page-controls.js) reads arrowKeysControl and
-// clickToJump directly and duplicates their defaults.
+// The content scripts read some settings directly and duplicate their defaults:
+// page-controls.js (arrowKeysControl, clickToJump), floating-controls.js (floatingControls).
 
 export const DEFAULTS = Object.freeze({
   backendUrl: 'http://localhost:8080',
@@ -12,6 +12,7 @@ export const DEFAULTS = Object.freeze({
   autoNextChapter: false, // "Continue with the next chapter"
   arrowKeysControl: true, // "Arrow keys control reading" on the page
   clickToJump: true, // "Click a paragraph to read from there"
+  floatingControls: false, // "Floating buttons on the page" (src/content/floating-controls.js)
 });
 
 /** Settings keys that change which voice is used. */
@@ -100,7 +101,7 @@ export async function saveSettings(partial) {
   const next = { ...partial };
   if ('backendUrl' in next) next.backendUrl = normalizeBackendUrl(next.backendUrl);
   if ('playbackRate' in next) next.playbackRate = normalizeRate(next.playbackRate);
-  for (const key of ['autoNextChapter', 'arrowKeysControl', 'clickToJump']) {
+  for (const key of ['autoNextChapter', 'arrowKeysControl', 'clickToJump', 'floatingControls']) {
     if (key in next) next[key] = Boolean(next[key]);
   }
   if ('provider' in next || 'voice' in next) {

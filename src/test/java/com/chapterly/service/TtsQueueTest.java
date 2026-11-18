@@ -99,7 +99,12 @@ class TtsQueueTest {
 
         assertThat(queue.cancel("b")).isTrue();
         assertThat(queue.queued()).isZero();
-        assertThatThrownBy(() -> b.get(5, TimeUnit.SECONDS)).hasCauseInstanceOf(CancellationException.class);
+        // b was completed with the CancellationException, which get() throws as a
+        // CancellationException (newer JDKs wrap it in one with message "get" and the original as cause).
+        assertThatThrownBy(() -> b.get(5, TimeUnit.SECONDS))
+                .isInstanceOf(CancellationException.class)
+                .satisfies(e -> assertThat(e.getCause() instanceof CancellationException ? e.getCause() : e)
+                        .hasMessage("TTS request b was cancelled while queued"));
 
         blocker.countDown();
         await(() -> queue.running() == 0);

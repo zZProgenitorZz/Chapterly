@@ -9,6 +9,8 @@
 //   chunks: [{index, text, paragraphIndexes}], currentIndex, createdAt, updatedAt
 // }
 
+import { createSerialQueue } from './serial.js';
+
 const KEY_ACTIVE = 'activeSession';
 const KEY_SNAPSHOT = 'playerSnapshot';
 // A chapter extracted and warmed up when the popup opened (PREPARE_CHAPTER), not started:
@@ -17,13 +19,8 @@ const KEY_PREPARED = 'preparedChapter';
 
 /** @param {chrome.storage.StorageArea} area defaults to chrome.storage.session */
 export function createSessionStore(area) {
-  let queue = Promise.resolve();
   // Read-modify-write operations run one at a time (events can arrive in bursts).
-  const serial = (fn) => {
-    const run = queue.then(fn, fn);
-    queue = run.catch(() => {});
-    return run;
-  };
+  const serial = createSerialQueue();
   const read = async (key) => (await area.get(key))[key] ?? null;
 
   return {
@@ -136,12 +133,7 @@ export function novelKey({ extractorId, seriesTitle, url }) {
  * @param {chrome.storage.StorageArea} area defaults to chrome.storage.local
  */
 export function createPositionStore(area, { limit = MAX_POSITIONS, now = () => Date.now() } = {}) {
-  let queue = Promise.resolve();
-  const serial = (fn) => {
-    const run = queue.then(fn, fn);
-    queue = run.catch(() => {});
-    return run;
-  };
+  const serial = createSerialQueue();
   const readAll = async () => (await area.get(KEY_POSITIONS))[KEY_POSITIONS] ?? {};
 
   return {

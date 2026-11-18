@@ -21,4 +21,5 @@ export const CONTENT_SCRIPT_FILES = [
   'src/content/extract.js',
   'src/content/highlight.js',
   'src/content/page-controls.js',
+  'src/content/floating-controls.js',
 ];
